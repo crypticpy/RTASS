@@ -378,6 +378,12 @@ def main():
                     info = jr.get(job_id) or {}
                     if info.get("status") == "complete" and info.get("result"):
                         scorecard = info["result"]
+                        # Coerce into ScorecardResult for UI rendering if needed
+                        try:
+                            from .scoring import coerce_scorecard_result
+                            scorecard = coerce_scorecard_result(scorecard)
+                        except Exception:
+                            pass
                         st.session_state["scorecard_result"] = scorecard
                         st.success("Compliance audit completed.")
                     elif info.get("status") == "failed":

@@ -127,6 +127,18 @@ class ComplianceScorer:
         self.retry_sleep = retry_sleep
         self.concurrency = max(1, int(concurrency))
 
+    def _with_retries(self, fn: Callable[[], Any]) -> Any:
+        last_exc: Optional[Exception] = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return fn()
+            except Exception as exc:  # pragma: no cover
+                last_exc = exc
+                if attempt == self.max_retries:
+                    break
+                time.sleep(self.retry_sleep * (attempt + 1))
+        raise RuntimeError("Compliance scoring failed") from last_exc
+
     def evaluate(
         self,
         transcript: Dict[str, Any],
@@ -135,7 +147,7 @@ class ComplianceScorer:
         status_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> ScorecardResult:
         digest = _build_transcript_digest(transcript)
-        sections = self._extract_sections(template)
+        sections = extract_sections_from_template(template)
 
         # Backward-compatible path: if no sections in template, do a single-shot scoring
         if not sections:
@@ -161,11 +173,15 @@ class ComplianceScorer:
                     },
                 ]
                 try:
-                    return self.client.responses.create(
-                        model=self.model,
-                        input=messages,
-                        response_format=self._score_schema(),
-                    )
+                    schema = getattr(self, "_score_schema", None)
+                    if callable(schema):
+                        return self.client.responses.create(
+                            model=self.model,
+                            input=messages,
+                            response_format=self._score_schema(),
+                        )
+                    else:  # fall back if method missing
+                        raise TypeError()
                 except TypeError:
                     return self.client.responses.create(
                         model=self.model,
@@ -354,6 +370,63 @@ class ComplianceScorer:
         }
         return self._map_scorecard(aggregated, meta)
 
+
+def extract_sections_from_template(template: PolicyTemplate) -> List[Dict[str, Any]]:
+    cats = template.schema.get("categories") or []
+    out = []
+    for c in cats:
+        out.append({
+            "name": c.get("name", "Unnamed"),
+            "weight": c.get("weight"),
+            "criteria": c.get("criteria") or [],
+        })
+    return out
+
+
+def coerce_scorecard_result(obj: Any) -> ScorecardResult:
+    """Convert a dict-like scorecard payload to ScorecardResult if needed.
+
+    This is helpful when objects cross Streamlit reruns or threads and lose class identity.
+    """
+    if isinstance(obj, ScorecardResult):
+        return obj
+    if isinstance(obj, dict):
+        cats: List[ScoreCategoryResult] = []
+        for item in obj.get("categories", []) or []:
+            crits: List[ScoreCriterionResult] = []
+            for c in item.get("criteria", []) or []:
+                crits.append(
+                    ScoreCriterionResult(
+                        id=str(c.get("id", "")),
+                        status=str(c.get("status", "unknown")),
+                        rationale=str(c.get("rationale", "")),
+                        action_items=list(c.get("action_items") or []),
+                        score=c.get("score"),
+                        weight=c.get("weight"),
+                    )
+                )
+            cats.append(
+                ScoreCategoryResult(
+                    name=str(item.get("name", "")),
+                    status=str(item.get("status", "unknown")),
+                    rationale=str(item.get("rationale", "")),
+                    criteria=crits,
+                    score=item.get("score"),
+                    weight=item.get("weight"),
+                    findings=list(item.get("findings") or []),
+                    suggestedImprovements=list(item.get("suggestedImprovements") or []),
+                )
+            )
+        return ScorecardResult(
+            overall_status=str(obj.get("overall_status", "unknown")),
+            overall_score= obj.get("overall_score"),
+            summary=str(obj.get("summary", "")),
+            categories=cats,
+            recommendations=list(obj.get("recommendations") or []),
+            meta=dict(obj.get("meta") or {}),
+        )
+    raise TypeError("Unsupported scorecard object type")
+
     def _with_retries(self, fn: Callable[[], Any]) -> Any:
         last_exc: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
@@ -414,6 +487,54 @@ class ComplianceScorer:
                             "type": "array",
                             "items": {"type": "string"},
                         },
+                    },
+                    "required": ["overall_status", "summary", "categories"],
+                },
+            },
+        }
+
+    @staticmethod
+    def _score_schema() -> Dict[str, Any]:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "fire_radio_scorecard",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "overall_status": {"type": "string"},
+                        "overall_score": {"type": ["number", "null"]},
+                        "summary": {"type": "string"},
+                        "categories": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "status": {"type": "string"},
+                                    "score": {"type": ["number", "null"]},
+                                    "weight": {"type": ["number", "null"]},
+                                    "rationale": {"type": "string"},
+                                    "criteria": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": {"type": "string"},
+                                                "status": {"type": "string"},
+                                                "score": {"type": ["number", "null"]},
+                                                "weight": {"type": ["number", "null"]},
+                                                "rationale": {"type": "string"},
+                                                "action_items": {"type": "array", "items": {"type": "string"}},
+                                            },
+                                            "required": ["id", "status", "rationale"],
+                                        },
+                                    },
+                                },
+                                "required": ["name", "status", "rationale", "criteria"],
+                            },
+                        },
+                        "recommendations": {"type": "array", "items": {"type": "string"}},
                     },
                     "required": ["overall_status", "summary", "categories"],
                 },
