@@ -113,11 +113,13 @@ class ComplianceScorer:
         model: str,
         max_retries: int = 2,
         retry_sleep: float = 2.0,
+        concurrency: int = 1,
     ):
         self.client = OpenAI(api_key=api_key)
         self.model = model
         self.max_retries = max_retries
         self.retry_sleep = retry_sleep
+        self.concurrency = max(1, int(concurrency))
 
     def evaluate(
         self,
@@ -167,17 +169,17 @@ class ComplianceScorer:
             }
             return self._map_scorecard(raw, meta)
 
-        # Sectional path
+        # Sectional path (parallelizable)
         section_results: List[Dict[str, Any]] = []
         start_total = time.time()
 
-        for section in sections:
+        def run_one(sec: Dict[str, Any]) -> Dict[str, Any]:
             payload = {
-                "section": section,
+                "section": sec,
                 "transcript_digest": digest,
                 "additional_notes": additional_notes or "",
             }
-            start = time.time()
+            t0 = time.time()
             response = self._with_retries(
                 lambda: self.client.responses.create(
                     model=self.model,
@@ -198,11 +200,22 @@ class ComplianceScorer:
                     response_format=self._section_schema(),
                 )
             )
-            latency_ms = int((time.time() - start) * 1000)
+            latency_ms = int((time.time() - t0) * 1000)
             raw = json.loads(response.output_text)
             raw["latency_ms"] = latency_ms
             raw["model"] = getattr(response, "model", self.model)
-            section_results.append(raw)
+            return raw
+
+        if self.concurrency > 1 and len(sections) > 1:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
+                futures = {pool.submit(run_one, sec): idx for idx, sec in enumerate(sections)}
+                for fut in as_completed(futures):
+                    section_results.append(fut.result())
+        else:
+            for sec in sections:
+                section_results.append(run_one(sec))
 
         # Aggregate
         aggregated = self._aggregate_sections(section_results)
