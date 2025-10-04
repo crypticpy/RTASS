@@ -207,11 +207,12 @@ def render_audit_controls(
         height=120,
     )
 
+    can_audit = has_transcript or (direct_transcript is not None) or bool(pasted_text.strip())
     run_audit = st.button(
         "Generate report card",
         type="primary",
         key="run_audit_button",
-        disabled=not has_transcript,
+        disabled=not can_audit,
     )
 
     # Store direct transcript inputs in session for the app to pick up
