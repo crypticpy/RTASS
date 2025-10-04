@@ -1,5 +1,6 @@
 """File management for transcripts."""
 
+import json
 from pathlib import Path
 
 import streamlit as st
@@ -42,3 +43,30 @@ class TranscriptManager:
             key=f"dl_{fname}",
         )
         st.caption(f"Saved at: {out_path.resolve()}")
+
+    def save_structured(
+        self,
+        document: dict,
+        model: str,
+        source_name: str,
+        label: str = "⬇️ Download structured JSON",
+    ) -> Path:
+        """Persist structured transcript document and register download."""
+        stem = Path(source_name).stem
+        fname = stable_filename(stem, f"{model}-structured", "json")
+        out_path = self.output_dir / fname
+        serialized = json.dumps(document, indent=2)
+        out_path.write_text(serialized, encoding="utf-8")
+
+        st.session_state.setdefault("downloads", {})
+        st.session_state["downloads"][fname] = serialized.encode("utf-8")
+
+        st.download_button(
+            label=label,
+            data=st.session_state["downloads"][fname],
+            file_name=fname,
+            mime="application/json",
+            key=f"dl_{fname}",
+        )
+        st.caption(f"Structured JSON saved at: {out_path.resolve()}")
+        return out_path

@@ -9,6 +9,7 @@ from openai import OpenAI
 
 from .constants import DEFAULT_SR
 from .segments import PreparedSegment
+from .transcript_assembler import assemble_transcript
 
 
 class TranscriptionService:
@@ -126,7 +127,7 @@ class TranscriptionService:
 
     def transcribe_segments(
         self,
-        segments: List[Path],
+        segments: List[PreparedSegment],
         model: str,
         response_format: str,
         language: Optional[str] = None,
@@ -135,7 +136,8 @@ class TranscriptionService:
         """Transcribe multiple segments with optional progress callback."""
         chunks = []
 
-        for i, seg in enumerate(segments, start=1):
+        for i, segment in enumerate(segments, start=1):
+            seg = segment.path
             try:
                 t0 = time.time()
                 text = self.transcribe_segment(
@@ -155,14 +157,20 @@ class TranscriptionService:
 
         return chunks
 
-    def combine_transcript_chunks(
-        self, chunks: List[str], response_format: str
-    ) -> str:
-        """Combine transcript chunks into final output."""
-        if response_format in ("text", "srt", "vtt"):
-            return ("\n\n" + ("—" * 24) + "\n\n").join(chunks)
-        else:
-            return "\n".join(chunks)  # JSONL for multi-segment case
+    def build_transcript_document(
+        self,
+        chunks: List[str],
+        segments: List[PreparedSegment],
+        model: str,
+        response_format: str,
+    ) -> Dict[str, object]:
+        """Produce structured transcript metadata for downstream workflows."""
+        return assemble_transcript(
+            raw_chunks=chunks,
+            segments=segments,
+            response_format=response_format,
+            model=model,
+        )
 
     def transcribe_segments_comparison(
         self,
