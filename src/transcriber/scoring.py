@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from collections import deque
 
 from openai import OpenAI
 
@@ -126,6 +127,7 @@ class ComplianceScorer:
         transcript: Dict[str, Any],
         template: PolicyTemplate,
         additional_notes: Optional[str] = None,
+        status_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> ScorecardResult:
         digest = _build_transcript_digest(transcript)
         sections = self._extract_sections(template)
@@ -169,13 +171,65 @@ class ComplianceScorer:
             }
             return self._map_scorecard(raw, meta)
 
-        # Sectional path (parallelizable)
+        # Sectional path with adaptive concurrency and self-recovery
         section_results: List[Dict[str, Any]] = []
         start_total = time.time()
 
-        def run_one(sec: Dict[str, Any]) -> Dict[str, Any]:
+        # Prepare tasks and status
+        @dataclass
+        class Task:
+            index: int
+            section: Dict[str, Any]
+            attempts: int = 0
+
+        statuses: Dict[int, Dict[str, Any]] = {
+            i: {"state": "queued", "attempts": 0} for i in range(len(sections))
+        }
+
+        def emit_status():
+            if status_callback:
+                done = sum(1 for s in statuses.values() if s["state"] == "done")
+                failed = sum(1 for s in statuses.values() if s["state"] == "failed")
+                running = sum(1 for s in statuses.values() if s["state"] == "running")
+                queued = len(sections) - done - failed - running
+                status_callback(
+                    {
+                        "total": len(sections),
+                        "done": done,
+                        "failed": failed,
+                        "running": running,
+                        "queued": queued,
+                        "concurrency": concurrency,
+                    }
+                )
+
+        def classify_error(exc: Exception) -> str:
+            msg = str(exc).lower()
+            if "rate limit" in msg or "429" in msg:
+                return "rate_limit"
+            if "timeout" in msg or "timed out" in msg:
+                return "timeout"
+            if "json" in msg and "schema" in msg:
+                return "schema"
+            return "other"
+
+        # Decide initial concurrency automatically if not set explicitly
+        def pick_initial_concurrency(n: int) -> int:
+            if self.concurrency and self.concurrency > 0:
+                return self.concurrency
+            # Moderate defaults: up to 3 parallel sections
+            return min(3, max(1, n))
+
+        max_attempts = max(2, self.max_retries + 1)
+        concurrency = pick_initial_concurrency(len(sections))
+        pending: Deque[Task] = deque(Task(i, sec) for i, sec in enumerate(sections))
+        in_flight: Dict[Any, Task] = {}
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed, Future
+
+        def run_one(task: Task) -> Dict[str, Any]:
             payload = {
-                "section": sec,
+                "section": task.section,
                 "transcript_digest": digest,
                 "additional_notes": additional_notes or "",
             }
@@ -206,16 +260,65 @@ class ComplianceScorer:
             raw["model"] = getattr(response, "model", self.model)
             return raw
 
-        if self.concurrency > 1 and len(sections) > 1:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+            emit_status()
+            while pending or in_flight:
+                # Schedule up to concurrency
+                while pending and len(in_flight) < concurrency:
+                    task = pending.popleft()
+                    statuses[task.index] = {"state": "running", "attempts": task.attempts}
+                    fut = pool.submit(run_one, task)
+                    in_flight[fut] = task
+                emit_status()
 
-            with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
-                futures = {pool.submit(run_one, sec): idx for idx, sec in enumerate(sections)}
-                for fut in as_completed(futures):
-                    section_results.append(fut.result())
-        else:
-            for sec in sections:
-                section_results.append(run_one(sec))
+                if not in_flight:
+                    break
+
+                # Wait for any to complete
+                done_futs: List[Future] = []
+                for fut in as_completed(list(in_flight.keys()), timeout=5):
+                    done_futs.append(fut)
+                    # Handle one wave of completions then re-evaluate scheduling
+                    break
+
+                if not done_futs:
+                    continue
+
+                for fut in done_futs:
+                    task = in_flight.pop(fut)
+                    try:
+                        result = fut.result()
+                        section_results.append(result)
+                        statuses[task.index] = {"state": "done", "attempts": task.attempts}
+                    except Exception as exc:  # pragma: no cover (behavior tested via classification)
+                        kind = classify_error(exc)
+                        task.attempts += 1
+                        statuses[task.index] = {"state": "retrying", "attempts": task.attempts, "error": kind}
+                        # Adaptive concurrency on rate limit: back off by 1, not below 1
+                        if kind == "rate_limit" and concurrency > 1:
+                            concurrency -= 1
+                        # Re-enqueue or give up
+                        if task.attempts < max_attempts:
+                            # Mild backoff
+                            time.sleep(min(2.0 * task.attempts, 5.0))
+                            pending.appendleft(task)
+                        else:
+                            # Final failure: produce neutral payload to keep aggregation stable
+                            neutral = {
+                                "section": {
+                                    "name": task.section.get("name", f"Section {task.index+1}"),
+                                    "weight": task.section.get("weight"),
+                                    "criteria": task.section.get("criteria") or [],
+                                },
+                                "criteria": [],
+                                "sectionScore": None,
+                                "sectionMax": None,
+                                "findings": [],
+                                "suggestedImprovements": ["Automatic fallback due to repeated errors"],
+                            }
+                            section_results.append(neutral)
+                            statuses[task.index] = {"state": "failed", "attempts": task.attempts, "error": kind}
+                emit_status()
 
         # Aggregate
         aggregated = self._aggregate_sections(section_results)
