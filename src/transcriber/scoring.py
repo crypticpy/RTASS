@@ -11,6 +11,7 @@ from collections import deque
 from openai import OpenAI
 
 from .policy_ingestion import PolicyTemplate
+from .evidence import select_evidence
 
 
 def _format_ts(value: Optional[float]) -> str:
@@ -233,6 +234,10 @@ class ComplianceScorer:
                 "transcript_digest": digest,
                 "additional_notes": additional_notes or "",
             }
+            # Attach evidence snippets to reduce tokens and guide citations
+            evidence = select_evidence(transcript, task.section, k=5)
+            if evidence:
+                payload["evidence"] = evidence
             t0 = time.time()
             response = self._with_retries(
                 lambda: self.client.responses.create(

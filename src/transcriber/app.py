@@ -18,6 +18,8 @@ from .policy_ingestion import (DocumentExtractor, PolicyTemplate,
                                TemplateBuilder, TemplateStore)
 from .spreadsheet_ingestion import load_scorecard
 from .scoring import ComplianceScorer, ScorecardResult
+from .jobrunner import JobRunner
+from .template_editor import edit_template
 from .transcription import TranscriptionService
 from .ui import (render_advanced_settings, render_audit_controls,
                  render_audit_summary, render_info_expander,
@@ -288,29 +290,67 @@ def main():
                         schema=selected_template_schema,
                         created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     )
-                    # Status UI
-                    status_box = st.empty()
+                    # In-memory job runner for async simulation
+                    jr = st.session_state.setdefault("jobrunner", JobRunner())
 
-                    def status_cb(s: Dict[str, int]):
-                        status_box.info(
-                            f"Analyzing sections: {s['done']} done, {s['running']} running, "
-                            f"{s['queued']} queued, {s.get('failed',0)} failed. Concurrency {s['concurrency']}"
+                    status_box = st.empty()
+                    result_box = st.empty()
+
+                    def make_job():
+                        def status_cb(s: Dict[str, int]):
+                            jr.update_progress(job_id, s)
+                        return scorer.evaluate(
+                            transcript=transcript_doc,
+                            template=template,
+                            additional_notes=audit_inputs.additional_notes,
+                            status_callback=status_cb,
                         )
 
-                    scorecard = scorer.evaluate(
-                        transcript=transcript_doc,
-                        template=template,
-                        additional_notes=audit_inputs.additional_notes,
-                        status_callback=status_cb,
-                    )
-                    st.session_state["scorecard_result"] = scorecard
-                    st.success("Compliance audit completed.")
+                    job_id = jr.create(make_job)
+                    st.info(f"Started job {job_id}")
+
+                    # Simple poller; Streamlit reruns; here we do a short loop
+                    import time as _t
+                    for _ in range(300):  # up to ~30s
+                        info = jr.get(job_id)
+                        if not info:
+                            break
+                        prog = info.get("progress") or {}
+                        status_box.info(
+                            f"Job {job_id[:8]} — {info['status']}; "
+                            f"Sections: {prog.get('done',0)}/{prog.get('total',0)} done; "
+                            f"running {prog.get('running',0)}, queued {prog.get('queued',0)}, failed {prog.get('failed',0)}"
+                        )
+                        if info.get("status") in {"complete", "failed"}:
+                            break
+                        _t.sleep(0.1)
+
+                    info = jr.get(job_id) or {}
+                    if info.get("status") == "complete" and info.get("result"):
+                        scorecard = info["result"]
+                        st.session_state["scorecard_result"] = scorecard
+                        st.success("Compliance audit completed.")
+                    elif info.get("status") == "failed":
+                        st.error(f"Analysis job failed: {info.get('error')}")
                 except Exception as audit_err:
                     st.error(f"Compliance scoring failed: {audit_err}")
 
         scorecard_payload = st.session_state.get("scorecard_result")
         if isinstance(scorecard_payload, ScorecardResult):
             show_scorecard(scorecard_payload)
+
+        # Template editor: if we have a selected or generated template, allow inline edits and save
+        current_schema = selected_template_schema or (generated_template.schema if generated_template else None)
+        if current_schema:
+            edited = edit_template(current_schema)
+            if st.button("Save edited template"):
+                temp = PolicyTemplate(
+                    name=edited.get("template_name", "Edited Template"),
+                    schema=edited,
+                    created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                )
+                TemplateStore(Path(POLICY_STORAGE_DIR)).save(temp)
+                st.success(f"Template '{temp.name}' saved.")
 
 
 if __name__ == "__main__":
