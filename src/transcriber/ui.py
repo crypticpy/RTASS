@@ -157,6 +157,19 @@ def render_audit_controls(
             type=["txt", "md", "pdf", "docx", "json"],
             key="policy_upload",
         )
+        st.caption("Or directly upload a transcript to audit:")
+        direct_transcript = st.file_uploader(
+            "Upload transcript (TXT/JSON)",
+            type=["txt", "json"],
+            key="direct_transcript_upload",
+            help="JSON should be a previously saved structured transcript; TXT will be split into paragraphs for auditing.",
+        )
+        pasted_text = st.text_area(
+            "Or paste transcript text",
+            key="pasted_transcript_text",
+            height=140,
+            placeholder="Paste transcript text here to audit without uploading audio…",
+        )
         scorecard_file = st.file_uploader(
             "Upload existing scorecard (XLSX/CSV)",
             type=["xlsx", "csv"],
@@ -200,6 +213,12 @@ def render_audit_controls(
         key="run_audit_button",
         disabled=not has_transcript,
     )
+
+    # Store direct transcript inputs in session for the app to pick up
+    if direct_transcript is not None:
+        st.session_state["direct_transcript_file"] = direct_transcript
+    if pasted_text.strip():
+        st.session_state["pasted_transcript_text"] = pasted_text.strip()
 
     return AuditInputs(
         policy_file=policy_file,

@@ -22,6 +22,7 @@ from .jobrunner import JobRunner
 from .template_editor import edit_template
 from .redaction import redact_transcript_document
 from .transcription import TranscriptionService
+from .transcript_assembler import assemble_transcript_from_text
 from .ui import (render_advanced_settings, render_audit_controls,
                  render_audit_summary, render_info_expander,
                  render_main_controls, render_sidebar, show_final_info,
@@ -216,6 +217,33 @@ def main():
                 st.session_state["transcript_document"] = transcript_doc
                 st.session_state["transcript_source_name"] = source_name
                 st.info(f"Loaded latest transcript from disk: {source_name}")
+
+        # Handle direct transcript upload/paste to enable audit without audio
+        if st.session_state.get("direct_transcript_file") is not None:
+            up = st.session_state.pop("direct_transcript_file")
+            try:
+                content = up.read()
+                up.seek(0)
+                if up.name.lower().endswith(".json"):
+                    data = json.loads(content.decode("utf-8", errors="ignore"))
+                    st.session_state["transcript_document"] = data
+                    st.session_state["transcript_source_name"] = up.name
+                else:
+                    txt = content.decode("utf-8", errors="ignore")
+                    doc = assemble_transcript_from_text(txt, model="manual-text")
+                    st.session_state["transcript_document"] = doc
+                    st.session_state["transcript_source_name"] = up.name
+                st.success("Transcript loaded for audit.")
+            except Exception as e:
+                st.error(f"Failed to load transcript file: {e}")
+
+        pasted = st.session_state.get("pasted_transcript_text")
+        if pasted:
+            doc = assemble_transcript_from_text(pasted, model="manual-text")
+            st.session_state["transcript_document"] = doc
+            st.session_state["transcript_source_name"] = "pasted-text.txt"
+            st.success("Pasted transcript captured for audit.")
+            st.session_state["pasted_transcript_text"] = ""
 
         template_store = TemplateStore(Path(POLICY_STORAGE_DIR))
         stored_templates = template_store.list_templates()

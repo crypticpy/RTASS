@@ -92,3 +92,58 @@ def assemble_transcript(
         ],
         "chunks": [chunk.to_dict() for chunk in doc_chunks],
     }
+
+
+def assemble_transcript_from_text(
+    text: str,
+    model: str = "manual-text",
+    response_format: str = "text",
+) -> Dict[str, Any]:
+    """Create a structured transcript document from raw text.
+
+    Splits text into paragraphs (double newline) or lines if no paragraphs found.
+    Timing metadata is omitted (start/end are None).
+    """
+    text = (text or "").strip()
+    if not text:
+        return {
+            "model": model,
+            "response_format": response_format,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "text": "",
+            "segments": [],
+            "chunks": [],
+        }
+
+    parts = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if len(parts) <= 1:
+        parts = [l.strip() for l in text.splitlines() if l.strip()]
+
+    chunks: List[TranscriptChunk] = []
+    for idx, part in enumerate(parts):
+        chunks.append(
+            TranscriptChunk(
+                index=idx,
+                start_sec=None,
+                end_sec=None,
+                text=part,
+                raw=part,
+            )
+        )
+
+    return {
+        "model": model,
+        "response_format": response_format,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "text": "\n\n".join(parts),
+        "segments": [
+            {
+                "index": c.index,
+                "start_sec": c.start_sec,
+                "end_sec": c.end_sec,
+                "text": c.text,
+            }
+            for c in chunks
+        ],
+        "chunks": [c.to_dict() for c in chunks],
+    }
