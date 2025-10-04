@@ -263,6 +263,7 @@ def main():
             selected_template_schema = stored_templates.get(
                 audit_inputs.selected_template_name
             )
+            st.session_state["selected_template_name"] = audit_inputs.selected_template_name
 
         if generated_template and not audit_inputs.selected_template_name:
             selected_template_schema = generated_template.schema
@@ -291,7 +292,11 @@ def main():
                         created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     )
                     # In-memory job runner for async simulation
-                    jr = st.session_state.setdefault("jobrunner", JobRunner())
+                    persist_file = str(Path("transcripts") / "jobs.json")
+                    jr = st.session_state.get("jobrunner")
+                    if not jr:
+                        jr = JobRunner(persist_path=persist_file)
+                        st.session_state["jobrunner"] = jr
 
                     status_box = st.empty()
                     result_box = st.empty()
@@ -351,6 +356,28 @@ def main():
                 )
                 TemplateStore(Path(POLICY_STORAGE_DIR)).save(temp)
                 st.success(f"Template '{temp.name}' saved.")
+
+        # Recalculate with edited template (uses last transcript)
+        if current_schema and transcript_doc and st.button("Recalculate with edited template", type="secondary"):
+            try:
+                scorer = ComplianceScorer(
+                    api_key=api_key,
+                    model=DEFAULT_COMPLIANCE_MODEL,
+                )
+                template = PolicyTemplate(
+                    name=edited.get("template_name", "Edited Template"),
+                    schema=edited,
+                    created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                )
+                result = scorer.evaluate(
+                    transcript=transcript_doc,
+                    template=template,
+                    additional_notes=audit_inputs.additional_notes,
+                )
+                st.session_state["scorecard_result"] = result
+                st.success("Recalculated with edited template.")
+            except Exception as recalc_err:
+                st.error(f"Recalculation failed: {recalc_err}")
 
 
 if __name__ == "__main__":

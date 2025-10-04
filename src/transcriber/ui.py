@@ -11,6 +11,7 @@ from .constants import SUPPORTED_EXTS
 from .scoring import ScorecardResult
 from .spreadsheet_ingestion import load_scorecard, ScorecardTable
 from .redaction import redact_transcript_document
+from .pdf_export import render_pdf_bytes
 
 
 def render_sidebar(default_api_key: str = ""):
@@ -277,6 +278,21 @@ def show_scorecard(scorecard: ScorecardResult) -> None:
         file_name="scorecard.json",
         mime="application/json",
         key="download_scorecard",
+    )
+
+    # PDF export button
+    pdf_bytes = render_pdf_bytes(
+        scorecard.to_dict(),
+        transcript_name=st.session_state.get("transcript_source_name"),
+        template_name=st.session_state.get("selected_template_name"),
+        model=scorecard.meta.get("model") if scorecard.meta else None,
+    )
+    st.download_button(
+        label="📄 Download PDF report",
+        data=pdf_bytes,
+        file_name="compliance_report.pdf",
+        mime="application/pdf",
+        key="download_pdf_report",
     )
 
 

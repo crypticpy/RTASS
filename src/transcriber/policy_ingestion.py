@@ -101,17 +101,29 @@ class TemplateBuilder:
         scorecard_structure: Optional[Dict[str, Any]] = None,
     ) -> PolicyTemplate:
         prompt = self._compose_prompt(policy.text, instructions, scorecard_structure)
-        response = self.client.responses.create(
-            model=self.model,
-            input=[
-                {
-                    "role": "system",
-                    "content": "You convert fire department radio policies into structured scoring templates."
-                },
-                {"role": "user", "content": prompt},
-            ],
-            response_format={"type": "json_schema", "json_schema": self._schema_contract()},
-        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You convert fire department radio policies into structured scoring templates. "
+                    "Return ONLY strict JSON per the schema; do not include markdown or commentary."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+        # Try with response_format; fall back if the installed SDK doesn't support it
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                input=messages,
+                response_format={"type": "json_schema", "json_schema": self._schema_contract()},
+            )
+        except TypeError:
+            response = self.client.responses.create(
+                model=self.model,
+                input=messages,
+            )
 
         payload = self._extract_response_json(response)
         return PolicyTemplate(

@@ -13,9 +13,18 @@ from typing import Any, Callable, Dict, Optional
 
 
 class JobRunner:
-    def __init__(self):
+    def __init__(self, persist_path: Optional[str] = None):
         self._jobs: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
+        self._persist_path = persist_path
+        if persist_path:
+            try:
+                import json, os
+                if os.path.exists(persist_path):
+                    with open(persist_path, "r") as f:
+                        self._jobs = json.load(f)
+            except Exception:
+                pass
 
     def create(self, target: Callable[[], Any]) -> str:
         job_id = uuid.uuid4().hex
@@ -43,6 +52,7 @@ class JobRunner:
         with self._lock:
             if job_id in self._jobs:
                 self._jobs[job_id].update(fields)
+                self._persist()
 
     def update_progress(self, job_id: str, progress: Dict[str, int]):
         self._update(job_id, progress=progress)
@@ -50,3 +60,13 @@ class JobRunner:
     def get(self, job_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             return dict(self._jobs.get(job_id) or {})
+
+    def _persist(self):
+        if not self._persist_path:
+            return
+        try:
+            import json
+            with open(self._persist_path, "w") as f:
+                json.dump(self._jobs, f)
+        except Exception:
+            pass
