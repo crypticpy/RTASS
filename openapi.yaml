@@ -1,0 +1,130 @@
+openapi: 3.0.3
+info:
+  title: Transcriber + Compliance Scoring API
+  version: 0.1.0
+  description: |
+    Minimal REST contract for document/template generation, transcription, and sectional scoring.
+servers:
+  - url: http://localhost:8000
+paths:
+  /templates/from-docs:
+    post:
+      summary: Generate a template from policy and optional scorecard
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                policy:
+                  type: string
+                  format: binary
+                scorecard:
+                  type: string
+                  format: binary
+                instructions:
+                  type: string
+      responses:
+        '200':
+          description: Template generation started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templateName:
+                    type: string
+                  savedPath:
+                    type: string
+                  schema:
+                    type: object
+  /transcriptions:
+    post:
+      summary: Create a structured transcript document from an uploaded audio
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                audio:
+                  type: string
+                  format: binary
+                model:
+                  type: string
+                  default: gpt-4o-transcribe
+                output_format:
+                  type: string
+                  enum: [text, json, verbose_json, srt, vtt]
+                  default: json
+      responses:
+        '200':
+          description: Structured transcript
+          content:
+            application/json:
+              schema:
+                type: object
+  /analyses:
+    post:
+      summary: Score a transcript with a selected template (sectional if sections present)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                transcript:
+                  type: object
+                template:
+                  type: object
+                notes:
+                  type: string
+      responses:
+        '200':
+          description: Scorecard results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overall_status:
+                    type: string
+                  overall_score:
+                    type: number
+                    nullable: true
+                  summary:
+                    type: string
+                  categories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        status: { type: string }
+                        score: { type: number, nullable: true }
+                        weight: { type: number, nullable: true }
+                        rationale: { type: string }
+                        criteria:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id: { type: string }
+                              status: { type: string }
+                              score: { type: number, nullable: true }
+                              weight: { type: number, nullable: true }
+                              rationale: { type: string }
+                              action_items:
+                                type: array
+                                items: { type: string }
+                  recommendations:
+                    type: array
+                    items: { type: string }
+                  meta:
+                    type: object
+                    properties:
+                      model: { type: string }
+                      latency_ms: { type: integer }

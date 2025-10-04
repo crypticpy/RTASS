@@ -123,3 +123,27 @@ def test_transcribe_segments_comparison(mock_openai, mock_transcribe, tmp_path):
     calls = mock_transcribe.call_args_list
     assert calls[0].kwargs["model"] == "whisper-1"
     assert calls[1].kwargs["model"].startswith("gpt-4o")
+
+
+@patch("transcriber.transcription.OpenAI")
+def test_build_transcript_document(mock_openai, tmp_path):
+    mock_openai.return_value = MagicMock()
+
+    seg1 = PreparedSegment(tmp_path / "seg1.mp3", 0.0, 10.0)
+    seg2 = PreparedSegment(tmp_path / "seg2.mp3", 10.0, 20.0)
+
+    service = TranscriptionService(api_key="sk-test")
+    raw_chunks = [json.dumps({"text": "First"}), json.dumps({"text": "Second"})]
+
+    document = service.build_transcript_document(
+        chunks=raw_chunks,
+        segments=[seg1, seg2],
+        model="gpt-4o-mini-transcribe",
+        response_format="json",
+    )
+
+    assert document["model"] == "gpt-4o-mini-transcribe"
+    assert len(document["segments"]) == 2
+    assert document["segments"][0]["start_sec"] == pytest.approx(0.0)
+    assert document["segments"][1]["text"] == "Second"
+    assert "chunks" in document and len(document["chunks"]) == 2

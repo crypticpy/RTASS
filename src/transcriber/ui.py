@@ -1,9 +1,15 @@
 """Streamlit UI components."""
 
+import json
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
 import streamlit as st
 
 from .config import effective_output_formats
 from .constants import SUPPORTED_EXTS
+from .scoring import ScorecardResult
+from .spreadsheet_ingestion import load_scorecard, ScorecardTable
 
 
 def render_sidebar(default_api_key: str = ""):
@@ -114,4 +120,147 @@ def show_final_info():
     st.info(
         "The download button remains available after clicking and the file is also saved under ./transcripts/. "
         "Nothing is uploaded anywhere except to the OpenAI API for transcription."
+    )
+
+
+@dataclass
+class AuditInputs:
+    policy_file: Optional[Any]
+    scorecard_file: Optional[Any]
+    template_file: Optional[Any]
+    selected_template_name: Optional[str]
+    convert_policy: bool
+    run_audit: bool
+    instructions: str
+    additional_notes: str
+
+
+def render_audit_controls(
+    has_transcript: bool, stored_templates: Dict[str, Dict]
+) -> AuditInputs:
+    """Render controls for compliance auditing."""
+
+    if not has_transcript:
+        st.warning("Transcribe audio to enable compliance scoring.")
+
+    policy_col, template_col = st.columns(2)
+    with policy_col:
+        policy_file = st.file_uploader(
+            "Upload policy document",
+            type=["txt", "md", "pdf", "docx", "json"],
+            key="policy_upload",
+        )
+        scorecard_file = st.file_uploader(
+            "Upload existing scorecard (XLSX/CSV)",
+            type=["xlsx", "csv"],
+            key="scorecard_upload",
+            help="Optional: used to seed the template generation"
+        )
+        instructions = st.text_area(
+            "Conversion instructions (optional)",
+            key="policy_instructions",
+            height=120,
+        )
+        convert_policy = st.button(
+            "Convert policy to template",
+            key="convert_policy_button",
+            disabled=policy_file is None,
+        )
+
+    with template_col:
+        template_file = st.file_uploader(
+            "Upload existing template (JSON)",
+            type=["json"],
+            key="template_upload",
+        )
+
+        template_names = ["" ] + sorted(stored_templates.keys())
+        selected_template_name = st.selectbox(
+            "Select template",
+            options=template_names,
+            key="template_select",
+        )
+
+    additional_notes = st.text_area(
+        "Notes for the auditor (optional)",
+        key="audit_notes",
+        height=120,
+    )
+
+    run_audit = st.button(
+        "Generate report card",
+        type="primary",
+        key="run_audit_button",
+        disabled=not has_transcript,
+    )
+
+    return AuditInputs(
+        policy_file=policy_file,
+        scorecard_file=scorecard_file,
+        template_file=template_file,
+        selected_template_name=selected_template_name or None,
+        convert_policy=convert_policy,
+        run_audit=run_audit,
+        instructions=instructions.strip(),
+        additional_notes=additional_notes.strip(),
+    )
+
+
+def render_audit_summary(stored_templates: Dict[str, Dict]) -> None:
+    """Display available templates and hints."""
+    if not stored_templates:
+        st.info("No templates saved yet. Upload or generate one to begin.")
+        return
+
+    st.subheader("Saved templates")
+    for name in sorted(stored_templates.keys()):
+        st.caption(f"• {name}")
+
+
+def show_scorecard(scorecard: ScorecardResult) -> None:
+    """Render the compliance scorecard results."""
+    st.subheader("Compliance scorecard")
+
+    status_col, score_col = st.columns(2)
+    status_col.metric("Status", scorecard.overall_status.title())
+    if scorecard.overall_score is not None:
+        score_col.metric("Overall score", f"{scorecard.overall_score:.2f}")
+    else:
+        score_col.metric("Overall score", "N/A")
+
+    if scorecard.summary:
+        st.write(scorecard.summary)
+
+    for category in scorecard.categories:
+        header = f"{category.name} — {category.status.title()}"
+        with st.expander(header, expanded=False):
+            if category.score is not None:
+                st.caption(f"Score: {category.score:.2f}")
+            if category.rationale:
+                st.write(category.rationale)
+            for criterion in category.criteria:
+                st.markdown(
+                    f"**{criterion.id}** — {criterion.status.title()}"
+                )
+                if criterion.score is not None:
+                    st.caption(f"Score: {criterion.score:.2f}")
+                if criterion.rationale:
+                    st.write(criterion.rationale)
+                if criterion.action_items:
+                    st.markdown("Action items:")
+                    for item in criterion.action_items:
+                        st.markdown(f"- {item}")
+
+    if scorecard.recommendations:
+        st.subheader("Recommendations")
+        for rec in scorecard.recommendations:
+            st.markdown(f"- {rec}")
+
+    serialized = json.dumps(scorecard.to_dict(), indent=2)
+    st.download_button(
+        label="⬇️ Download scorecard JSON",
+        data=serialized.encode("utf-8"),
+        file_name="scorecard.json",
+        mime="application/json",
+        key="download_scorecard",
     )
