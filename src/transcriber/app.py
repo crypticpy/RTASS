@@ -284,10 +284,20 @@ def main():
                         schema=selected_template_schema,
                         created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     )
+                    # Status UI
+                    status_box = st.empty()
+
+                    def status_cb(s: Dict[str, int]):
+                        status_box.info(
+                            f"Analyzing sections: {s['done']} done, {s['running']} running, "
+                            f"{s['queued']} queued, {s.get('failed',0)} failed. Concurrency {s['concurrency']}"
+                        )
+
                     scorecard = scorer.evaluate(
                         transcript=transcript_doc,
                         template=template,
                         additional_notes=audit_inputs.additional_notes,
+                        status_callback=status_cb,
                     )
                     st.session_state["scorecard_result"] = scorecard
                     st.success("Compliance audit completed.")
