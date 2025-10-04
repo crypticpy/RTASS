@@ -542,6 +542,8 @@ class ComplianceScorer:
                     criteria=criteria,
                     score=item.get("score"),
                     weight=item.get("weight"),
+                    findings=list(item.get("findings") or []),
+                    suggestedImprovements=list(item.get("suggestedImprovements") or []),
                 )
             )
 
