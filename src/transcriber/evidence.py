@@ -49,16 +49,33 @@ def select_evidence(transcript: Dict[str, Any], section: Dict[str, Any], k: int 
     if not keywords:
         return []
 
+    # Build simple DF for keywords across segments
+    df: Dict[str, int] = {kw: 0 for kw in keywords}
+    texts: List[str] = []
+    for seg in segments:
+        t = str(seg.get("text", "")).lower()
+        texts.append(t)
+        for kw in keywords:
+            if kw and t and kw in t:
+                df[kw] += 1
+
+    N = max(1, len(segments))
     scores: List[Tuple[float, int]] = []  # (score, index)
-    for idx, seg in enumerate(segments):
-        text = str(seg.get("text", "")).lower()
+    for idx, text in enumerate(texts):
         if not text:
             scores.append((0.0, idx))
             continue
         score = 0.0
         for kw in keywords:
-            # keyword frequency
-            score += text.count(kw)
+            if not kw:
+                continue
+            tf = text.count(kw)
+            if tf == 0:
+                continue
+            df_kw = max(1, df.get(kw, 1))
+            # tf-idf with log weighting
+            idf = max(0.0, (N / df_kw))
+            score += tf * idf
         scores.append((score, idx))
 
     # pick top-k > 0 scores; if all zeros, return empty to avoid noise

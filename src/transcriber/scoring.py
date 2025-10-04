@@ -245,7 +245,7 @@ class ComplianceScorer:
                     input=[
                         {
                             "role": "system",
-                            "content": "You are a meticulous evaluator. Score only this section strictly as JSON.",
+                            "content": "You are a meticulous evaluator. Use any provided evidence snippets with timestamps for citations. Return only JSON that conforms to the schema.",
                         },
                         {
                             "role": "user",

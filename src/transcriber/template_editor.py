@@ -61,5 +61,18 @@ def edit_template(schema: Dict[str, Any]) -> Dict[str, Any]:
                 "criteria": new_criteria,
             })
 
+    # Optional auto-normalize weights
+    if st.checkbox("Auto-normalize category weights to sum 1.0", value=True):
+        total = sum((c.get("weight") or 0.0) for c in new_categories) or 1.0
+        for c in new_categories:
+            c["weight"] = float(c.get("weight") or 0.0) / total
+
+    # Normalize criteria weights inside each category
+    for c in new_categories:
+        crits = c.get("criteria") or []
+        t = sum((ci.get("weight") or 0.0) for ci in crits) or 1.0
+        for ci in crits:
+            ci["weight"] = float(ci.get("weight") or 0.0) / t
+
     schema["categories"] = new_categories
     return schema
