@@ -70,3 +70,25 @@ class TranscriptManager:
         )
         st.caption(f"Structured JSON saved at: {out_path.resolve()}")
         return out_path
+
+    def load_latest_structured(self) -> tuple[dict, str] | None:
+        """Load the most recently modified structured transcript JSON from disk.
+
+        Returns a tuple of (document, source_name) or None if none found.
+        """
+        candidates = sorted(
+            self.output_dir.glob("*-structured.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for path in candidates:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                # Attempt to recover source name from filename
+                stem = path.stem
+                # stable_filename builds like: <source>__<model>-structured
+                source_part = stem.split("__", 1)[0] if "__" in stem else stem
+                return data, source_part
+            except Exception:
+                continue
+        return None

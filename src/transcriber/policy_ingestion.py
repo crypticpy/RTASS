@@ -148,15 +148,21 @@ class TemplateBuilder:
     @staticmethod
     def _compose_prompt(policy_text: str, instructions: Optional[str], scorecard: Optional[Dict[str, Any]]) -> str:
         base = (
-            "Given the following fire department radio policy, produce a JSON template "
-            "with scoring categories, criteria, pass/fail guidance, and weighting."
+            "Given the following fire department radio policy, produce a DETAILED JSON template "
+            "with robust scoring categories and criteria. Each category should have 5–10 criteria where applicable. "
+            "Include clear descriptions and guidance for each criterion and reasonable weights."
         )
         if instructions:
             base += f"\nAdditional user instructions: {instructions}\n"
         if scorecard:
             base += "\nIncorporate elements of the user's existing scorecard table (columns, weights, criteria) provided below."
             base += "\nExisting scorecard JSON:\n" + json.dumps(scorecard)[:8000]
-        return base + "\nPolicy text:\n" + policy_text[:10000]
+        return (
+            base
+            + "\nPolicy text (truncated if long):\n"
+            + policy_text[:20000]
+            + "\nBe comprehensive and do NOT limit to two criteria per category."
+        )
 
     @staticmethod
     def _schema_contract() -> Dict[str, Any]:

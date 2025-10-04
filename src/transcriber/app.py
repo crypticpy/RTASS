@@ -20,6 +20,7 @@ from .spreadsheet_ingestion import load_scorecard
 from .scoring import ComplianceScorer, ScorecardResult
 from .jobrunner import JobRunner
 from .template_editor import edit_template
+from .redaction import redact_transcript_document
 from .transcription import TranscriptionService
 from .ui import (render_advanced_settings, render_audit_controls,
                  render_audit_summary, render_info_expander,
@@ -206,6 +207,15 @@ def main():
 
     with audit_tab:
         transcript_doc = st.session_state.get("transcript_document")
+        if not transcript_doc:
+            # try to load from disk latest structured transcript
+            tm = TranscriptManager()
+            latest = tm.load_latest_structured()
+            if latest:
+                transcript_doc, source_name = latest
+                st.session_state["transcript_document"] = transcript_doc
+                st.session_state["transcript_source_name"] = source_name
+                st.info(f"Loaded latest transcript from disk: {source_name}")
 
         template_store = TemplateStore(Path(POLICY_STORAGE_DIR))
         stored_templates = template_store.list_templates()
@@ -282,6 +292,13 @@ def main():
                     scorer = ComplianceScorer(
                         api_key=api_key,
                         model=DEFAULT_COMPLIANCE_MODEL,
+                    )
+                    # persist current transcript to ensure availability across sessions
+                    TranscriptManager().save_structured(
+                        document=transcript_doc,
+                        model=model,
+                        source_name=st.session_state.get("transcript_source_name", "transcript"),
+                        label="",
                     )
                     template_name = audit_inputs.selected_template_name
                     if not template_name and generated_template:
