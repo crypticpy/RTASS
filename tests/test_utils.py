@@ -1,12 +1,14 @@
 """Test utility functions."""
 
+import subprocess
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 
-from transcriber.utils import (bytes_per_ms, ffmpeg_available,
-                               reencode_to_mp3_speech, split_mp3_under_limit,
+from transcriber.utils import (bytes_per_ms, compute_silence_boundaries,
+                               ffmpeg_available, reencode_to_mp3_speech,
+                               split_mp3_by_silence, split_mp3_under_limit,
                                stable_filename, write_uploaded_to_tmp)
 
 
@@ -91,6 +93,14 @@ class DummyAudio:
         else:
             dest.write_bytes(b"0" * 2048)
         return path
+
+    def __getitem__(self, key):
+        return DummyAudio(
+            frame_rate=self.frame_rate,
+            channels=self.channels,
+            length=self._length,
+            export_hook=self._export_hook,
+        )
 
     def _spawn(self, raw_data, overrides=None):
         overrides = overrides or {}
@@ -217,3 +227,91 @@ class TestReencodeToMp3Speech:
         af_value = cmd[cmd.index("-af") + 1]
         assert "atempo=" in af_value
         assert "1.50000" in af_value
+
+
+class TestSilenceSplitting:
+    """Tests for silence-aware splitting helpers."""
+
+    def test_compute_silence_boundaries_prefers_end(self):
+        markers = {"start": [590.0], "end": [605.0, 1210.0]}
+        boundaries = compute_silence_boundaries(
+            duration=1800.0,
+            markers=markers,
+            target_seconds=600,
+            max_extension=180,
+        )
+        assert boundaries[0] == pytest.approx(605.0)
+        assert boundaries[-1] == pytest.approx(1800.0)
+
+    def test_compute_silence_boundaries_falls_back(self):
+        markers = {"start": [], "end": []}
+        boundaries = compute_silence_boundaries(
+            duration=1200.0,
+            markers=markers,
+            target_seconds=600,
+            max_extension=120,
+        )
+        assert boundaries == [600, 1200.0]
+
+    @patch("transcriber.utils.AudioSegment.from_file")
+    @patch("transcriber.utils.detect_silence_markers")
+    @patch("transcriber.utils.subprocess.run")
+    def test_split_mp3_by_silence_exports_segments(
+        self, mock_run, mock_detect, mock_audio, tmp_path
+    ):
+        mock_audio.return_value = DummyAudio(length=1_800_000)
+        mock_detect.return_value = {"start": [610.0], "end": [605.0, 1215.0]}
+
+        def fake_run(cmd, check, capture_output, text):
+            Path(cmd[-1]).write_bytes(b"segment")
+
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return Result()
+
+        mock_run.side_effect = fake_run
+
+        src = tmp_path / "full.mp3"
+        src.write_bytes(b"dummy")
+
+        segments = split_mp3_by_silence(src, target_seconds=600, max_extension=300)
+
+        assert len(segments) == 3
+        assert segments[0].start == pytest.approx(0.0)
+        assert segments[0].end == pytest.approx(605.0)
+        assert segments[-1].end == pytest.approx(1800.0)
+        for seg in segments:
+            assert seg.path.exists()
+
+    @patch("transcriber.utils.AudioSegment.from_file")
+    @patch("transcriber.utils.detect_silence_markers")
+    @patch("transcriber.utils.subprocess.run")
+    def test_split_mp3_by_silence_fallback_on_error(
+        self, mock_run, mock_detect, mock_audio, tmp_path
+    ):
+        export_calls = []
+
+        def record_export(dest):
+            export_calls.append(dest)
+            dest.write_bytes(b"segment")
+
+        mock_audio.return_value = DummyAudio(length=1_200_000, export_hook=record_export)
+        mock_detect.return_value = {"start": [], "end": [600.0, 1200.0]}
+
+        def fake_run(cmd, check, capture_output, text):
+            raise subprocess.CalledProcessError(1, cmd, "error")
+
+        mock_run.side_effect = fake_run
+
+        src = tmp_path / "full.mp3"
+        src.write_bytes(b"dummy")
+
+        segments = split_mp3_by_silence(src, target_seconds=600, max_extension=120)
+
+        assert len(segments) == 2
+        assert export_calls, "Fallback export should have been triggered"
+        for seg in segments:
+            assert seg.path.exists()

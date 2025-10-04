@@ -1,13 +1,14 @@
 """Core transcription functionality."""
 
+import json
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from openai import OpenAI
 
-from .config import effective_output_formats, map_response_format_to_ext
 from .constants import DEFAULT_SR
+from .segments import PreparedSegment
 
 
 class TranscriptionService:
@@ -24,6 +25,7 @@ class TranscriptionService:
         response_format: str,
         language: Optional[str] = None,
         _retry_count: int = 0,
+        prompt: Optional[str] = None,
     ) -> str:
         """
         Transcribe a single audio segment.
@@ -54,6 +56,8 @@ class TranscriptionService:
 
         if language and language.lower() != "auto":
             params["language"] = language
+        if prompt:
+            params["prompt"] = prompt
 
         try:
             result = self.client.audio.transcriptions.create(**params)
@@ -159,3 +163,117 @@ class TranscriptionService:
             return ("\n\n" + ("—" * 24) + "\n\n").join(chunks)
         else:
             return "\n".join(chunks)  # JSONL for multi-segment case
+
+    def transcribe_segments_comparison(
+        self,
+        segments: List[PreparedSegment],
+        language: Optional[str] = None,
+        progress_callback=None,
+        models: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, object]:
+        """Transcribe segments with both whisper-1 and gpt-4o-mini-transcribe."""
+
+        model_plan = models or [
+            {
+                "label": "whisper-1",
+                "model": "whisper-1",
+                "response_format": "verbose_json",
+            },
+            {
+                "label": "gpt-4o-mini-transcribe",
+                "model": "gpt-4o-mini-transcribe",
+                "response_format": "text",
+            },
+        ]
+
+        chunks_output = []
+        final_segments: List[Dict[str, object]] = []
+        final_text_parts: List[str] = []
+        tail_prompt = ""
+
+        for i, segment in enumerate(segments, start=1):
+            try:
+                t0 = time.time()
+                chunk_record: Dict[str, object] = {
+                    "index": i - 1,
+                    "start_sec": segment.start,
+                    "end_sec": segment.end,
+                    "files": {"audio_path": str(segment.path)},
+                }
+
+                for plan in model_plan:
+                    prompt = None
+                    if plan["model"].startswith("gpt-4o") and tail_prompt:
+                        prompt = tail_prompt
+
+                    raw = self.transcribe_segment(
+                        model=plan["model"],
+                        fpath=segment.path,
+                        response_format=plan["response_format"],
+                        language=language,
+                        prompt=prompt,
+                    )
+
+                    if plan["response_format"].endswith("json"):
+                        try:
+                            parsed = json.loads(raw)
+                        except json.JSONDecodeError:
+                            parsed = {"text": raw}
+                    else:
+                        parsed = raw.strip()
+
+                    chunk_record[plan["label"]] = {
+                        "model": plan["model"],
+                        "response": parsed,
+                    }
+
+                    if plan["model"].startswith("gpt-4o"):
+                        if isinstance(parsed, str):
+                            final_text_parts.append(parsed.strip())
+                            words = parsed.strip().split()
+                            tail_prompt = " ".join(words[-20:]) if words else ""
+                        else:
+                            text = parsed.get("text", "")
+                            final_text_parts.append(text)
+                            words = text.split()
+                            tail_prompt = " ".join(words[-20:]) if words else ""
+                    elif plan["model"] == "whisper-1":
+                        segments_data = parsed.get("segments") if isinstance(parsed, dict) else None
+                        if segments_data:
+                            for seg_data in segments_data:
+                                start_val = float(seg_data.get("start", 0.0)) + segment.start
+                                end_val = float(seg_data.get("end", start_val)) + segment.start
+                                final_segments.append(
+                                    {
+                                        "start_sec": start_val,
+                                        "end_sec": end_val,
+                                        "speaker": seg_data.get("speaker"),
+                                        "text": seg_data.get("text", ""),
+                                        "source": "whisper-1",
+                                    }
+                                )
+
+                dt = time.time() - t0
+                if progress_callback:
+                    progress_callback(i, len(segments), segment.path, dt)
+
+                chunks_output.append(chunk_record)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Transcription failed on segment {i}: {exc}"
+                ) from exc
+
+        final_text = "\n\n".join(part for part in final_text_parts if part)
+
+        return {
+            "chunks": chunks_output,
+            "final": {
+                "segments": final_segments,
+                "text_concat": final_text,
+            },
+            "meta": {
+                "diarization": {"enabled": False},
+                "models_compared": [plan["model"] for plan in model_plan],
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+        }

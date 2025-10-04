@@ -77,7 +77,11 @@ def render_advanced_settings(target_kbps: int, cap_mb: int):
             step=0.1,
             help="Increase above 1.0 to speed up and shrink files (e.g., 1.2); decrease below 1.0 to slow down.",
         )
-        return reencode, target_kbps, cap_mb, playback_rate
+        compare_models = st.checkbox(
+            "Enable silence-aware splitting and compare whisper-1 with gpt-4o-mini",
+            value=True,
+        )
+        return reencode, target_kbps, cap_mb, playback_rate, compare_models
 
 
 def render_info_expander():

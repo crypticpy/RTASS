@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from transcriber.audio_processor import AudioProcessor
+from transcriber.segments import PreparedSegment
 from transcriber.constants import MAX_UPLOAD_MB, SAFETY_MB
 
 
@@ -20,31 +21,47 @@ class TestAudioProcessor:
         """Clean up after tests."""
         self.processor.cleanup()
 
+    @patch("transcriber.audio_processor.AudioSegment.from_file")
     @patch("transcriber.audio_processor.write_uploaded_to_tmp")
     @patch("transcriber.audio_processor.ffmpeg_available")
     def test_prepare_audio_no_ffmpeg_small_file(
-        self, mock_ffmpeg, mock_write_tmp, mock_uploaded_file
+        self,
+        mock_ffmpeg,
+        mock_write_tmp,
+        mock_audio_segment,
+        mock_uploaded_file,
     ):
         mock_ffmpeg.return_value = False
         mock_path = Mock()
         mock_path.stat.return_value.st_size = 10 * 1024 * 1024  # 10MB
         mock_write_tmp.return_value = mock_path
+        dummy_audio = Mock()
+        dummy_audio.__len__ = lambda self=dummy_audio: 1000
+        mock_audio_segment.return_value = dummy_audio
 
         segments = self.processor.prepare_audio(
             mock_uploaded_file, reencode=False
         )
         assert len(segments) == 1
-        assert segments[0] == mock_path
+        assert segments[0].path == mock_path
 
+    @patch("transcriber.audio_processor.AudioSegment.from_file")
     @patch("transcriber.audio_processor.write_uploaded_to_tmp")
     @patch("transcriber.audio_processor.ffmpeg_available")
     def test_prepare_audio_no_ffmpeg_large_file(
-        self, mock_ffmpeg, mock_write_tmp, mock_uploaded_file
+        self,
+        mock_ffmpeg,
+        mock_write_tmp,
+        mock_audio_segment,
+        mock_uploaded_file,
     ):
         mock_ffmpeg.return_value = False
         mock_path = Mock()
         mock_path.stat.return_value.st_size = 30 * 1024 * 1024  # 30MB
         mock_write_tmp.return_value = mock_path
+        dummy_audio = Mock()
+        dummy_audio.__len__ = lambda self=dummy_audio: 3000
+        mock_audio_segment.return_value = dummy_audio
 
         with pytest.raises(RuntimeError, match="File exceeds size cap"):
             self.processor.prepare_audio(mock_uploaded_file, reencode=False)
@@ -66,7 +83,7 @@ class TestAudioProcessor:
         mock_write_tmp.return_value = src_path
         reencoded = Path("/tmp/audio.speech.mp3")
         mock_reencode.return_value = reencoded
-        mock_split.return_value = [reencoded]
+        mock_split.return_value = [PreparedSegment(reencoded, 0.0, 10.0)]
 
         segments = self.processor.prepare_audio(
             mock_uploaded_file,
@@ -74,9 +91,11 @@ class TestAudioProcessor:
             target_kbps=48,
             cap_mb=20,
             playback_rate=1.5,
+            use_silence_splitting=False,
         )
 
-        assert segments == [reencoded]
+        assert len(segments) == 1
+        assert segments[0].path == reencoded
         mock_reencode.assert_called_once_with(
             src_path,
             kbps=48,

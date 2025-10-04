@@ -1,5 +1,6 @@
 """Main Streamlit application."""
 
+import json
 import os
 from pathlib import Path
 
@@ -37,7 +38,13 @@ def main():
     
     api_key, model = render_sidebar(default_api_key)
     output_format, language, uploaded = render_main_controls(model)
-    reencode, target_kbps, cap_mb, playback_rate = render_advanced_settings(
+    (
+        reencode,
+        target_kbps,
+        cap_mb,
+        playback_rate,
+        compare_models,
+    ) = render_advanced_settings(
         TARGET_MP3_KBPS, int(SAFETY_MB)
     )
 
@@ -69,6 +76,7 @@ def main():
                 target_kbps=target_kbps,
                 cap_mb=float(cap_mb),
                 playback_rate=playback_rate,
+                use_silence_splitting=compare_models,
             )
 
             if len(segments) > 1:
@@ -84,21 +92,38 @@ def main():
 
         # Transcribe
         progress = st.progress(0.0, text="Transcribing …")
-        try:
-            chunks = transcription_service.transcribe_segments(
-                segments=segments,
-                model=model,
-                response_format=output_format,
-                language=language.strip() if language else None,
-                progress_callback=lambda i, total, seg, dt: (
-                    progress.progress(i / total),
-                    show_progress_callback(i, total, seg, dt),
-                ),
-            )
 
-            final_transcript = transcription_service.combine_transcript_chunks(
-                chunks, output_format
-            )
+        def _progress_update(i, total, seg_path, dt):
+            progress.progress(i / total)
+            show_progress_callback(i, total, seg_path, dt)
+
+        try:
+            if compare_models:
+                comparison = transcription_service.transcribe_segments_comparison(
+                    segments=segments,
+                    language=language.strip() if language else None,
+                    progress_callback=_progress_update,
+                )
+                final_transcript = json.dumps(comparison, indent=2)
+                preview_text = comparison.get("final", {}).get("text_concat", "")
+                download_model = "comparison"
+                download_format = "json"
+            else:
+                chunk_paths = [segment.path for segment in segments]
+                chunks = transcription_service.transcribe_segments(
+                    segments=chunk_paths,
+                    model=model,
+                    response_format=output_format,
+                    language=language.strip() if language else None,
+                    progress_callback=_progress_update,
+                )
+
+                final_transcript = transcription_service.combine_transcript_chunks(
+                    chunks, output_format
+                )
+                preview_text = final_transcript
+                download_model = model
+                download_format = output_format
 
         except Exception as transcribe_err:
             st.error(f"Transcription failed: {transcribe_err}")
@@ -107,11 +132,11 @@ def main():
             progress.empty()
 
         # Display results
-        show_transcript_preview(final_transcript)
+        show_transcript_preview(preview_text or final_transcript)
         file_manager.save_and_offer_download(
             content=final_transcript,
-            model=model,
-            response_format=output_format,
+            model=download_model,
+            response_format=download_format,
             source_name=uploaded.name,
         )
         show_final_info()

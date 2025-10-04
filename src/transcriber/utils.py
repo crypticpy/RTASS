@@ -5,11 +5,15 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 from pydub import AudioSegment
 
-from .constants import DEFAULT_SR, SAFETY_MB, TARGET_MP3_KBPS
+from .constants import (DEFAULT_SR, MAX_CHUNK_EXTENSION_SECONDS,
+                        MIN_SILENCE_DURATION, SAFETY_MB,
+                        SILENCE_THRESHOLD_DB, TARGET_CHUNK_SECONDS,
+                        TARGET_MP3_KBPS)
+from .segments import PreparedSegment
 
 
 def ffmpeg_available() -> bool:
@@ -192,7 +196,7 @@ def bytes_per_ms(file_path: Path, duration_ms: int) -> float:
 
 def split_mp3_under_limit(
     mp3_path: Path, target_mb: float = SAFETY_MB
-) -> List[Path]:
+) -> List[PreparedSegment]:
     """
     Split the MP3 into segments such that each exported segment stays under
     target_mb. Uses the observed bytes/ms ratio of the initial full file to
@@ -206,9 +210,9 @@ def split_mp3_under_limit(
     max_ms = int(max_bytes / max(b_per_ms, 1e-6))
 
     if mp3_path.stat().st_size <= max_bytes:
-        return [mp3_path]
+        return [PreparedSegment(mp3_path, 0.0, dur_ms / 1000)]
 
-    segments = []
+    segments: List[PreparedSegment] = []
     start = 0
     idx = 1
     while start < dur_ms:
@@ -216,7 +220,7 @@ def split_mp3_under_limit(
         chunk = full_audio[start:end]
         seg_path = mp3_path.with_name(f"{mp3_path.stem}_part_{idx:02d}.mp3")
         chunk.export(seg_path, format="mp3", bitrate=f"{TARGET_MP3_KBPS}k")
-        segments.append(seg_path)
+        segments.append(PreparedSegment(seg_path, start / 1000, end / 1000))
         start = end
         idx += 1
     return segments
@@ -226,3 +230,201 @@ def stable_filename(base: str, model: str, ext: str) -> str:
     """Generate stable filename with timestamp."""
     ts = int(time.time())
     return f"{base}.{model}.{ts}.{ext}"
+
+
+def detect_silence_markers(
+    audio_path: Path,
+    noise_db: float = SILENCE_THRESHOLD_DB,
+    min_silence: float = MIN_SILENCE_DURATION,
+) -> Dict[str, List[float]]:
+    """Detect silence start/end markers using ffmpeg."""
+    cmd = [
+        "ffmpeg",
+        "-i",
+        str(audio_path),
+        "-af",
+        f"silencedetect=noise={noise_db}dB:d={min_silence}",
+        "-f",
+        "null",
+        "-",
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Silence detection failed for {audio_path}: {result.stderr}"
+        )
+
+    markers: Dict[str, List[float]] = {"start": [], "end": []}
+    for line in result.stderr.splitlines():
+        line = line.strip()
+        if "silence_start" in line:
+            try:
+                value = float(line.split("silence_start:")[1].strip())
+                markers["start"].append(value)
+            except (ValueError, IndexError):
+                continue
+        elif "silence_end" in line:
+            try:
+                segment = line.split("silence_end:")[1]
+                value = float(segment.split("|")[0].strip())
+                markers["end"].append(value)
+            except (ValueError, IndexError):
+                continue
+
+    markers["start"].sort()
+    markers["end"].sort()
+    return markers
+
+
+def _select_boundary(
+    target: float,
+    last_boundary: float,
+    markers: Dict[str, List[float]],
+    max_extension: float,
+) -> float:
+    candidates = []
+    window_end = target + max_extension
+
+    for value in markers.get("end", []):
+        if target <= value <= window_end and value - last_boundary >= 1.0:
+            candidates.append((abs(value - target), 0, value))
+
+    for value in markers.get("start", []):
+        if target <= value <= window_end and value - last_boundary >= 1.0:
+            candidates.append((abs(value - target), 1, value))
+
+    if not candidates:
+        return max(target, last_boundary + 1.0)
+
+    candidates.sort()
+    return candidates[0][2]
+
+
+def compute_silence_boundaries(
+    duration: float,
+    markers: Dict[str, List[float]],
+    target_seconds: float = TARGET_CHUNK_SECONDS,
+    max_extension: float = MAX_CHUNK_EXTENSION_SECONDS,
+) -> List[float]:
+    """Compute boundary times snapped to detected silence."""
+    if duration <= 0:
+        return [0.0]
+
+    boundaries: List[float] = []
+    last_boundary = 0.0
+    target = target_seconds
+
+    while target < duration - 1.0:
+        boundary = _select_boundary(target, last_boundary, markers, max_extension)
+        boundary = min(boundary, duration)
+
+        if boundary >= duration - 1.0:
+            break
+
+        if boundary - last_boundary < 1.0:
+            boundary = min(duration, last_boundary + max(1.0, target_seconds / 4))
+            if boundary >= duration - 1.0:
+                break
+
+        boundaries.append(boundary)
+        last_boundary = boundary
+        target = boundary + target_seconds
+
+    boundaries.append(duration)
+    return boundaries
+
+
+def _format_timestamp(seconds: float) -> str:
+    secs = max(0.0, seconds)
+    hours = int(secs // 3600)
+    mins = int((secs % 3600) // 60)
+    rem = secs - hours * 3600 - mins * 60
+    return f"{hours:02d}:{mins:02d}:{rem:06.3f}"
+
+
+def split_mp3_by_silence(
+    mp3_path: Path,
+    target_seconds: float = TARGET_CHUNK_SECONDS,
+    max_extension: float = MAX_CHUNK_EXTENSION_SECONDS,
+    noise_db: float = SILENCE_THRESHOLD_DB,
+    min_silence: float = MIN_SILENCE_DURATION,
+    kbps: int = TARGET_MP3_KBPS,
+    sr: int = DEFAULT_SR,
+) -> List[PreparedSegment]:
+    """Split MP3 into segments aligned to silence markers."""
+    audio = AudioSegment.from_file(mp3_path)
+    duration = len(audio) / 1000
+
+    markers = detect_silence_markers(mp3_path, noise_db=noise_db, min_silence=min_silence)
+    boundaries = compute_silence_boundaries(
+        duration,
+        markers,
+        target_seconds=target_seconds,
+        max_extension=max_extension,
+    )
+
+    if len(boundaries) <= 1:
+        return [PreparedSegment(mp3_path, 0.0, duration)]
+
+    cuts = [0.0] + boundaries
+    segments: List[PreparedSegment] = []
+
+    for idx in range(len(cuts) - 1):
+        start = cuts[idx]
+        end = cuts[idx + 1]
+        if end - start <= 0.5:
+            continue
+
+        seg_path = mp3_path.with_name(
+            f"{mp3_path.stem}_chunk_{idx + 1:03d}{mp3_path.suffix}"
+        )
+
+        cmd = [
+            "ffmpeg",
+            "-i",
+            str(mp3_path),
+            "-ss",
+            _format_timestamp(start),
+            "-to",
+            _format_timestamp(end),
+            "-ac",
+            "1",
+            "-ar",
+            str(sr),
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            f"{kbps}k",
+            "-af",
+            "highpass=80,lowpass=8000,volume=1.5",
+            "-map_metadata",
+            "-1",
+            "-y",
+            str(seg_path),
+        ]
+
+        chunk_audio = audio[int(start * 1000) : int(end * 1000)]
+        chunk_audio = chunk_audio.set_channels(1).set_frame_rate(sr)
+
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            if not seg_path.exists() or seg_path.stat().st_size == 0:
+                raise subprocess.CalledProcessError(1, cmd, "empty output")
+        except subprocess.CalledProcessError:
+            chunk_audio.export(
+                seg_path,
+                format="mp3",
+                bitrate=f"{kbps}k",
+                codec="libmp3lame",
+            )
+            if not seg_path.exists() or seg_path.stat().st_size == 0:
+                raise RuntimeError(
+                    f"Fallback export failed for segment {seg_path.name}"
+                )
+        segments.append(PreparedSegment(seg_path, start, end))
+
+    if not segments:
+        return [PreparedSegment(mp3_path, 0.0, duration)]
+
+    return segments

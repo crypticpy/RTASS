@@ -3,9 +3,15 @@
 from pathlib import Path
 from typing import List
 
-from .constants import MAX_UPLOAD_MB, SAFETY_MB
+from pydub import AudioSegment
+
+from .constants import (MAX_CHUNK_EXTENSION_SECONDS, MAX_UPLOAD_MB,
+                        MIN_SILENCE_DURATION, SAFETY_MB,
+                        SILENCE_THRESHOLD_DB, TARGET_CHUNK_SECONDS)
+from .segments import PreparedSegment
 from .utils import (ffmpeg_available, reencode_to_mp3_speech,
-                    split_mp3_under_limit, write_uploaded_to_tmp)
+                    split_mp3_by_silence, split_mp3_under_limit,
+                    write_uploaded_to_tmp)
 
 
 class AudioProcessor:
@@ -21,7 +27,12 @@ class AudioProcessor:
         target_kbps: int = 32,
         cap_mb: float = SAFETY_MB,
         playback_rate: float = 1.0,
-    ) -> List[Path]:
+        use_silence_splitting: bool = True,
+        target_chunk_seconds: float = TARGET_CHUNK_SECONDS,
+        max_extension_seconds: float = MAX_CHUNK_EXTENSION_SECONDS,
+        silence_threshold_db: float = SILENCE_THRESHOLD_DB,
+        min_silence_duration: float = MIN_SILENCE_DURATION,
+    ) -> List[PreparedSegment]:
         """
         Prepare uploaded audio file for transcription.
         Returns list of audio segment paths.
@@ -29,7 +40,7 @@ class AudioProcessor:
         src_path = write_uploaded_to_tmp(uploaded_file)
         self.temp_files.append(src_path)
 
-        segments: List[Path] = []
+        segments: List[PreparedSegment] = []
 
         if reencode:
             if not ffmpeg_available():
@@ -45,15 +56,30 @@ class AudioProcessor:
                 src_path, kbps=target_kbps, playback_rate=playback_rate
             )
             self.temp_files.append(mp3_path)
-            segments = split_mp3_under_limit(mp3_path, target_mb=cap_mb)
-            self.temp_files.extend(segments)
+
+            if use_silence_splitting:
+                segments = split_mp3_by_silence(
+                    mp3_path,
+                    target_seconds=target_chunk_seconds,
+                    max_extension=max_extension_seconds,
+                    noise_db=silence_threshold_db,
+                    min_silence=min_silence_duration,
+                )
+            else:
+                segments = split_mp3_under_limit(mp3_path, target_mb=cap_mb)
+
+            for segment in segments:
+                if segment.path != mp3_path:
+                    self.temp_files.append(segment.path)
         else:
             if src_path.stat().st_size > (SAFETY_MB * 1024**2):
                 raise RuntimeError(
                     "File exceeds size cap and re-encoding is disabled. "
                     "Enable re-encoding or upload a smaller file."
                 )
-            segments = [src_path]
+            audio = AudioSegment.from_file(src_path)
+            duration = len(audio) / 1000
+            segments = [PreparedSegment(src_path, 0.0, duration)]
 
         return segments
 
