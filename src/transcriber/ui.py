@@ -257,6 +257,14 @@ def show_scorecard(scorecard: ScorecardResult) -> None:
                     for item in criterion.action_items:
                         st.markdown(f"- {item}")
 
+            # Render findings (citations)
+            if getattr(category, "findings", None):
+                st.markdown("**Citations**")
+                for f in category.findings:
+                    ts = f.get("timestamp") or _fmt_range(f.get("start_sec"), f.get("end_sec"))
+                    quote = f.get("quote") or f.get("text") or ""
+                    st.markdown(f"- [{ts}] {quote}")
+
     if scorecard.recommendations:
         st.subheader("Recommendations")
         for rec in scorecard.recommendations:
@@ -270,3 +278,19 @@ def show_scorecard(scorecard: ScorecardResult) -> None:
         mime="application/json",
         key="download_scorecard",
     )
+
+
+def _fmt_range(start, end) -> str:
+    try:
+        s = max(0.0, float(start or 0))
+        e = max(s, float(end or s))
+        return f"{_fmt_ts(s)}–{_fmt_ts(e)}"
+    except Exception:
+        return "--:--"
+
+
+def _fmt_ts(v: float) -> str:
+    hh = int(v // 3600)
+    mm = int((v % 3600) // 60)
+    ss = v - hh * 3600 - mm * 60
+    return f"{hh:02d}:{mm:02d}:{ss:05.2f}"

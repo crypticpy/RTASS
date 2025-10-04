@@ -76,6 +76,8 @@ class ScoreCategoryResult:
     criteria: List[ScoreCriterionResult] = field(default_factory=list)
     score: Optional[float] = None
     weight: Optional[float] = None
+    findings: List[Dict[str, Any]] = field(default_factory=list)
+    suggestedImprovements: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -85,6 +87,8 @@ class ScoreCategoryResult:
             "score": self.score,
             "weight": self.weight,
             "criteria": [criterion.to_dict() for criterion in self.criteria],
+            "findings": self.findings,
+            "suggestedImprovements": self.suggestedImprovements,
         }
 
 
@@ -263,6 +267,9 @@ class ComplianceScorer:
             raw = json.loads(response.output_text)
             raw["latency_ms"] = latency_ms
             raw["model"] = getattr(response, "model", self.model)
+            # Attach fallback evidence if model omits findings
+            if evidence and not raw.get("findings"):
+                raw["_fallback_evidence"] = evidence
             return raw
 
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
@@ -467,6 +474,8 @@ class ComplianceScorer:
             criteria_payload = sec.get("criteria") or []
             weight = sec_meta.get("weight") or 1.0
             score = sec.get("sectionScore")
+            findings = sec.get("findings") or sec.get("_fallback_evidence") or []
+            suggestions = sec.get("suggestedImprovements") or []
 
             criteria = [
                 {
@@ -488,6 +497,8 @@ class ComplianceScorer:
                     "criteria": criteria,
                     "score": score,
                     "weight": weight,
+                    "findings": findings,
+                    "suggestedImprovements": suggestions,
                 }
             )
             if score is not None:
