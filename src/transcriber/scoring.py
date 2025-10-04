@@ -145,26 +145,33 @@ class ComplianceScorer:
                 "additional_notes": additional_notes or "",
             }
             start = time.time()
-            response = self._with_retries(
-                lambda: self.client.responses.create(
-                    model=self.model,
-                    input=[
-                        {
-                            "role": "system",
-                            "content": "You are a compliance auditor for fire department radio communications. Return JSON following the contract.",
-                        },
-                        {
-                            "role": "user",
-                            "content": (
-                                "Evaluate the transcript digest against the policy template. "
-                                "Assign pass/fail/needs_improvement with rationale and actionable feedback. "
-                                f"JSON payload: {json.dumps(payload)}"
-                            ),
-                        },
-                    ],
-                    response_format=self._score_schema(),
-                )
-            )
+            def _single_call():
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "You are a compliance auditor for fire department radio communications. Return strict JSON following the contract.",
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Evaluate the transcript digest against the policy template. "
+                            "Assign pass/fail/needs_improvement with rationale and actionable feedback. "
+                            f"JSON payload: {json.dumps(payload)}"
+                        ),
+                    },
+                ]
+                try:
+                    return self.client.responses.create(
+                        model=self.model,
+                        input=messages,
+                        response_format=self._score_schema(),
+                    )
+                except TypeError:
+                    return self.client.responses.create(
+                        model=self.model,
+                        input=messages,
+                    )
+            response = self._with_retries(_single_call)
             latency_ms = int((time.time() - start) * 1000)
             raw = json.loads(response.output_text)
             usage = getattr(response, "usage", {}) or {}
@@ -243,26 +250,33 @@ class ComplianceScorer:
             if evidence:
                 payload["evidence"] = evidence
             t0 = time.time()
-            response = self._with_retries(
-                lambda: self.client.responses.create(
-                    model=self.model,
-                    input=[
-                        {
-                            "role": "system",
-                            "content": "You are a meticulous evaluator. Use any provided evidence snippets with timestamps for citations. Return only JSON that conforms to the schema.",
-                        },
-                        {
-                            "role": "user",
-                            "content": (
-                                "Analyze the transcript for the provided section and its criteria. "
-                                "Return JSON per schema. "
-                                f"Payload: {json.dumps(payload)}"
-                            ),
-                        },
-                    ],
-                    response_format=self._section_schema(),
-                )
-            )
+            def _section_call():
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "You are a meticulous evaluator. Use any provided evidence snippets with timestamps for citations. Return only JSON that conforms to the schema.",
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Analyze the transcript for the provided section and its criteria. "
+                            "Return JSON per schema. "
+                            f"Payload: {json.dumps(payload)}"
+                        ),
+                    },
+                ]
+                try:
+                    return self.client.responses.create(
+                        model=self.model,
+                        input=messages,
+                        response_format=self._section_schema(),
+                    )
+                except TypeError:
+                    return self.client.responses.create(
+                        model=self.model,
+                        input=messages,
+                    )
+            response = self._with_retries(_section_call)
             latency_ms = int((time.time() - t0) * 1000)
             raw = json.loads(response.output_text)
             raw["latency_ms"] = latency_ms
