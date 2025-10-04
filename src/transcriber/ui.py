@@ -10,6 +10,7 @@ from .config import effective_output_formats
 from .constants import SUPPORTED_EXTS
 from .scoring import ScorecardResult
 from .spreadsheet_ingestion import load_scorecard, ScorecardTable
+from .redaction import redact_transcript_document
 
 
 def render_sidebar(default_api_key: str = ""):
@@ -87,7 +88,12 @@ def render_advanced_settings(target_kbps: int, cap_mb: int):
             "Enable silence-aware splitting and compare whisper-1 with gpt-4o-mini",
             value=True,
         )
-        return reencode, target_kbps, cap_mb, playback_rate, compare_models
+        pii_redact = st.checkbox(
+            "Redact PII (emails/phones) before scoring",
+            value=True,
+            help="Names are not aggressively redacted to preserve context; can be extended later.",
+        )
+        return reencode, target_kbps, cap_mb, playback_rate, compare_models, pii_redact
 
 
 def render_info_expander():

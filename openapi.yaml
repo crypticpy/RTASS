@@ -128,3 +128,73 @@ paths:
                     properties:
                       model: { type: string }
                       latency_ms: { type: integer }
+  /jobs:
+    post:
+      summary: Create an async analysis job (transcript + template)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                transcript: { type: object }
+                template: { type: object }
+                notes: { type: string }
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId: { type: string }
+                  status: { type: string, enum: [queued, running, complete, failed] }
+  /jobs/{jobId}:
+    get:
+      summary: Get job status
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Job status payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId: { type: string }
+                  status: { type: string, enum: [queued, running, complete, failed] }
+                  progress:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      done: { type: integer }
+                      running: { type: integer }
+                      queued: { type: integer }
+                      failed: { type: integer }
+        '404':
+          description: Job not found
+  /jobs/{jobId}/result:
+    get:
+      summary: Get final scorecard result when complete
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Final scorecard
+          content:
+            application/json:
+              schema:
+                type: object
+        '409':
+          description: Job not complete

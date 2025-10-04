@@ -57,6 +57,7 @@ def main():
             cap_mb,
             playback_rate,
             compare_models,
+            pii_redact,
         ) = render_advanced_settings(
             TARGET_MP3_KBPS, int(SAFETY_MB)
         )
@@ -134,6 +135,9 @@ def main():
                                 response_format=output_format,
                             )
 
+                            # Optional redaction for later scoring
+                            if pii_redact:
+                                transcript_doc = redact_transcript_document(transcript_doc)
                             st.session_state["transcript_document"] = transcript_doc
                             st.session_state["transcript_source_name"] = uploaded.name
                             final_content = transcript_doc
