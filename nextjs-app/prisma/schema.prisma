@@ -1,0 +1,282 @@
+// Prisma Schema for Fire Department Radio Transcription System
+// Based on MIGRATION_PLAN.md Section 3.1.2
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// CORE INCIDENT MANAGEMENT MODELS
+// ============================================================================
+
+/**
+ * Incident represents a fire department emergency response event.
+ * Tracks incident details, status, and relationships to units, transcripts, and audits.
+ */
+model Incident {
+  id        String    @id @default(cuid())
+  number    String    @unique /// Incident number (e.g., "2024-001234")
+  type      String /// Type of incident (e.g., "Structure Fire", "Medical Emergency")
+  severity  String /// CRITICAL, HIGH, MEDIUM, LOW
+  address   String /// Location of the incident
+  startTime DateTime /// When the incident began
+  endTime   DateTime? /// When the incident was resolved (null if ongoing)
+  status    String /// ACTIVE, RESOLVED, MONITORING
+  summary   String? /// Brief summary of the incident
+
+  // Relationships
+  units       Unit[]       @relation("IncidentUnits")
+  transcripts Transcript[]
+  audits      Audit[]
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([number])
+  @@index([status])
+  @@index([startTime])
+  @@index([severity])
+  @@map("incidents")
+}
+
+/**
+ * Transcript represents the audio transcription of radio communications.
+ * Includes audio file reference, transcribed text, and emergency detections.
+ */
+model Transcript {
+  id         String @id @default(cuid())
+  incidentId String
+
+  // Audio file information
+  audioUrl     String /// URL to audio file (Azure Blob Storage or local)
+  originalName String /// Original filename
+  duration     Int /// Duration in seconds
+  fileSize     Int /// File size in bytes
+  format       String /// Audio format (mp3, mp4, m4a, wav, webm)
+
+  // Transcription content
+  text       String @db.Text /// Full transcript text
+  segments   Json /// Array of timed segments with timestamps
+  metadata   Json /// Processing metadata (Whisper model, quality metrics)
+  detections Json? /// Emergency detections (mayday calls, emergency terms)
+
+  // Relationships
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  audits   Audit[]
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([incidentId])
+  @@map("transcripts")
+}
+
+/**
+ * Unit represents a fire department apparatus (engine, ladder, battalion, etc.).
+ * Tracks unit information and assignments to incidents.
+ */
+model Unit {
+  id        String  @id @default(cuid())
+  number    String /// Unit identifier (e.g., "Engine 1", "Ladder 2")
+  type      String /// ENGINE, LADDER, BATTALION, EMS, RESCUE, CHIEF
+  personnel Int /// Number of personnel on unit
+  captain   String? /// Unit captain/officer name
+  station   String? /// Home station designation
+
+  // Relationships
+  incidents Incident[] @relation("IncidentUnits")
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([number])
+  @@index([type])
+  @@map("units")
+}
+
+// ============================================================================
+// COMPLIANCE AUDITING MODELS
+// ============================================================================
+
+/**
+ * Template defines the compliance framework used for auditing transcripts.
+ * Contains categories, criteria, and scoring parameters.
+ */
+model Template {
+  id            String  @id @default(cuid())
+  name          String /// Template name (e.g., "NFPA 1561 Compliance")
+  description   String? /// Template description
+  version       String  @default("1.0") /// Version number
+  categories    Json /// Compliance categories and criteria structure
+  isActive      Boolean @default(true) /// Is this template currently active?
+  source        String? /// Source reference (e.g., "NFPA 1561", "Custom SOP")
+  isAIGenerated Boolean @default(false) /// Was this template AI-generated from policy docs?
+  aiConfidence  Float? /// AI generation confidence score (0-1)
+
+  // Relationships
+  audits          Audit[]
+  sourceDocuments PolicyDocument[]
+  generation      TemplateGeneration?
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([isAIGenerated])
+  @@map("templates")
+}
+
+/**
+ * Audit represents a compliance evaluation of a transcript against a template.
+ * Contains scoring results, findings, and recommendations.
+ */
+model Audit {
+  id           String  @id @default(cuid())
+  incidentId   String
+  transcriptId String? /// Optional: direct transcript reference
+  templateId   String
+
+  // Scoring results
+  overallScore  Float? /// Overall compliance score (0-100)
+  overallStatus String /// PASS, FAIL, NEEDS_IMPROVEMENT
+  summary       String @db.Text /// Executive summary of audit results
+
+  // Detailed findings
+  findings        Json /// Detailed compliance findings by category
+  recommendations Json /// Action items and improvement suggestions
+  metadata        Json /// Scoring metadata, timing, AI model used
+
+  // Relationships
+  incident   Incident    @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  transcript Transcript? @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+  template   Template    @relation(fields: [templateId], references: [id])
+
+  // Metadata
+  createdAt DateTime @default(now())
+
+  @@index([incidentId])
+  @@index([templateId])
+  @@index([overallStatus])
+  @@map("audits")
+}
+
+// ============================================================================
+// POLICY DOCUMENT CONVERSION MODELS
+// ============================================================================
+
+/**
+ * PolicyDocument represents an uploaded policy document (PDF, Word, Excel, etc.).
+ * Stores extracted content and metadata for template generation.
+ */
+model PolicyDocument {
+  id           String  @id @default(cuid())
+  fileName     String /// Generated unique filename
+  originalName String /// Original uploaded filename
+  fileType     String /// pdf, docx, xlsx, pptx, txt
+  fileSize     Int /// File size in bytes
+  fileUrl      String /// URL to stored file
+  content      String  @db.Text /// Extracted text content
+  metadata     Json /// File-specific metadata (pages, sections, structure)
+  uploadedBy   String? /// User who uploaded (future auth)
+
+  // Relationships
+  templates   Template[]
+  generations TemplateGeneration_PolicyDocument[]
+
+  // Metadata
+  uploadedAt DateTime @default(now())
+
+  @@index([fileType])
+  @@index([uploadedAt])
+  @@map("policy_documents")
+}
+
+/**
+ * TemplateGeneration tracks the AI-powered generation of templates from policy documents.
+ * Stores generation metadata, confidence scores, and AI suggestions.
+ */
+model TemplateGeneration {
+  id            String @id @default(cuid())
+  templateId    String @unique
+  generationLog Json /// Detailed AI processing log
+  confidence    Float /// AI confidence score (0-1)
+  suggestions   Json /// AI improvement suggestions
+  aiModel       String @default("gpt-4o") /// AI model used for generation
+
+  // Relationships
+  template  Template                            @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  documents TemplateGeneration_PolicyDocument[]
+
+  // Metadata
+  generatedAt DateTime @default(now())
+
+  @@map("template_generations")
+}
+
+/**
+ * Many-to-many relationship between TemplateGeneration and PolicyDocument.
+ * Join table tracking which documents were used to generate which templates.
+ */
+model TemplateGeneration_PolicyDocument {
+  generationId String
+  documentId   String
+
+  generation TemplateGeneration @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  document   PolicyDocument     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  assignedAt DateTime @default(now())
+
+  @@id([generationId, documentId])
+  @@map("template_generation_policy_documents")
+}
+
+// ============================================================================
+// SYSTEM MONITORING MODELS
+// ============================================================================
+
+/**
+ * SystemMetrics tracks application performance and usage metrics.
+ * Used for monitoring, analytics, and optimization.
+ */
+model SystemMetrics {
+  id          String @id @default(cuid())
+  metricName  String /// Name of the metric (e.g., "transcription_time", "api_latency")
+  metricValue Float /// Numeric value of the metric
+  metadata    Json? /// Additional context and metadata
+
+  // Metadata
+  recordedAt DateTime @default(now())
+
+  @@index([metricName])
+  @@index([recordedAt])
+  @@map("system_metrics")
+}
+
+// ============================================================================
+// FUTURE EXTENSION MODELS (Commented for Phase 2-3)
+// ============================================================================
+
+// /**
+//  * User model for authentication and authorization (Future: Phase 4)
+//  */
+// model User {
+//   id            String   @id @default(cuid())
+//   email         String   @unique
+//   name          String
+//   role          String   /// FIREFIGHTER, INCIDENT_COMMANDER, TRAINING_OFFICER, FIRE_CHIEF, ADMIN
+//   passwordHash  String
+//   createdAt     DateTime @default(now())
+//   updatedAt     DateTime @updatedAt
+//
+//   @@map("users")
+// }
