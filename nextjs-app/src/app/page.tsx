@@ -1,275 +1,191 @@
-"use client"
+'use client';
+
+import React, { useEffect, useState } from 'react';
+import { StatsOverview } from '@/components/dashboard/StatsOverview';
+import { RecentIncidents, DashboardIncident } from '@/components/dashboard/RecentIncidents';
+import { QuickActions } from '@/components/dashboard/QuickActions';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AlertTriangle } from 'lucide-react';
+import type { DashboardStats } from '@/lib/services/dashboard';
 
 /**
- * Emergency UI Components Demo Page
+ * Dashboard Home Page
  *
- * This demo page showcases all 4 emergency UI components in action.
- * Use this as a reference for integrating components into your application.
+ * Main landing page for the Fire Department Radio Transcription System.
+ * Displays:
+ * - Statistics overview (incidents, templates, transcriptions, compliance)
+ * - Recent incidents list
+ * - Quick action buttons
  *
- * Components:
- * 1. TranscriptionProgress - Real-time audio transcription progress
- * 2. ComplianceScore - Audit compliance scoring with category breakdown
- * 3. EmergencyTimeline - Chronological emergency event display
- * 4. UnitStatus - Fire apparatus status tracking
+ * Uses API endpoints:
+ * - GET /api/dashboard/stats - For statistics overview
+ * - GET /api/dashboard/incidents - For recent incidents
  */
+export default function DashboardPage() {
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [incidents, setIncidents] = useState<DashboardIncident[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-import * as React from "react"
-import { TranscriptionProgress } from "@/components/ui/transcription-progress"
-import { ComplianceScore } from "@/components/ui/compliance-score"
-import { EmergencyTimeline } from "@/components/ui/emergency-timeline"
-import { UnitStatus } from "@/components/ui/unit-status"
+  useEffect(() => {
+    async function fetchDashboardData() {
+      try {
+        setLoading(true);
+        setError(null);
 
-export default function Home() {
-  const [transcriptionStatus, setTranscriptionStatus] = React.useState<
-    'uploading' | 'processing' | 'analyzing' | 'complete' | 'error'
-  >('processing')
-  const [progress, setProgress] = React.useState(67)
+        // Fetch stats and incidents in parallel
+        const [statsResponse, incidentsResponse] = await Promise.all([
+          fetch('/api/dashboard/stats'),
+          fetch('/api/dashboard/incidents?limit=5'),
+        ]);
 
-  // Simulate progress
-  React.useEffect(() => {
-    if (transcriptionStatus === 'processing' && progress < 100) {
-      const timer = setInterval(() => {
-        setProgress((prev) => {
-          if (prev >= 100) {
-            setTranscriptionStatus('complete')
-            return 100
-          }
-          return prev + 1
-        })
-      }, 500)
-      return () => clearInterval(timer)
+        if (!statsResponse.ok) {
+          throw new Error('Failed to load dashboard statistics');
+        }
+
+        if (!incidentsResponse.ok) {
+          throw new Error('Failed to load recent incidents');
+        }
+
+        const statsData = await statsResponse.json();
+        const incidentsData = await incidentsResponse.json();
+
+        setStats(statsData);
+        setIncidents(incidentsData.incidents || []);
+      } catch (err) {
+        console.error('Dashboard data fetch error:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load dashboard data');
+
+        // Set mock data for development when API fails
+        setStats({
+          incidents: {
+            total: 0,
+            active: 0,
+            resolved: 0,
+            withMayday: 0,
+          },
+          templates: {
+            total: 0,
+            active: 0,
+            aiGenerated: 0,
+          },
+          transcriptions: {
+            total: 0,
+            averageDuration: 0,
+            totalDuration: 0,
+          },
+          audits: {
+            total: 0,
+            averageScore: 0,
+            passCount: 0,
+            failCount: 0,
+            needsImprovementCount: 0,
+          },
+          recentActivity: {
+            lastIncidentDate: null,
+            lastTranscriptionDate: null,
+            lastAuditDate: null,
+          },
+        });
+        setIncidents([]);
+      } finally {
+        setLoading(false);
+      }
     }
-  }, [transcriptionStatus, progress])
+
+    fetchDashboardData();
+  }, []);
 
   return (
-    <div className="min-h-screen bg-background p-8 space-y-12">
-      <header className="max-w-6xl mx-auto">
-        <h1 className="text-4xl font-bold mb-2">Emergency UI Components Demo</h1>
+    <div className="container mx-auto px-4 py-8">
+      {/* Header */}
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold mb-2">Dashboard</h1>
         <p className="text-muted-foreground">
-          Fire Department Radio Transcription System - Phase 1 Components
+          Fire Department Radio Transcription & Compliance Analysis System
         </p>
-      </header>
+      </div>
 
-      {/* Section 1: TranscriptionProgress */}
-      <section className="max-w-2xl mx-auto space-y-4">
-        <div>
-          <h2 className="text-2xl font-bold mb-1">1. Transcription Progress</h2>
-          <p className="text-sm text-muted-foreground">
-            Real-time progress display for audio transcription operations
-          </p>
+      {/* Error Alert */}
+      {error && (
+        <Alert variant="destructive" className="mb-6">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {/* Loading State */}
+      {loading ? (
+        <div className="space-y-6">
+          {/* Stats Skeletons */}
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            {[...Array(4)].map((_, i) => (
+              <div key={i} className="rounded-lg border p-6">
+                <Skeleton className="h-4 w-24 mb-2" />
+                <Skeleton className="h-8 w-16 mb-3" />
+                <Skeleton className="h-3 w-full" />
+              </div>
+            ))}
+          </div>
+
+          {/* Content Skeletons */}
+          <div className="grid gap-6 lg:grid-cols-3">
+            <div className="lg:col-span-2">
+              <div className="rounded-lg border p-6">
+                <Skeleton className="h-6 w-32 mb-4" />
+                <div className="space-y-3">
+                  {[...Array(5)].map((_, i) => (
+                    <Skeleton key={i} className="h-20 w-full" />
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div>
+              <div className="rounded-lg border p-6">
+                <Skeleton className="h-6 w-32 mb-4" />
+                <div className="space-y-3">
+                  {[...Array(4)].map((_, i) => (
+                    <Skeleton key={i} className="h-24 w-full" />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
+      ) : (
+        <>
+          {/* Statistics Overview */}
+          {stats && (
+            <StatsOverview stats={stats} className="mb-6" />
+          )}
 
-        <TranscriptionProgress
-          fileName="structure-fire-radio-traffic-2024-10-04.mp3"
-          fileSize={23068672} // 22 MB
-          status={transcriptionStatus}
-          processingProgress={progress}
-          duration={180}
-          maydayDetected={transcriptionStatus === 'complete'}
-          emergencyCount={2}
-        />
-      </section>
+          {/* Main Content Grid */}
+          <div className="grid gap-6 lg:grid-cols-3">
+            {/* Recent Incidents - 2 columns on large screens */}
+            <div className="lg:col-span-2">
+              <RecentIncidents incidents={incidents} maxItems={5} />
+            </div>
 
-      {/* Section 2: ComplianceScore */}
-      <section className="max-w-2xl mx-auto space-y-4">
-        <div>
-          <h2 className="text-2xl font-bold mb-1">2. Compliance Score</h2>
-          <p className="text-sm text-muted-foreground">
-            Visual display of compliance audit scores with category breakdown
-          </p>
-        </div>
+            {/* Quick Actions - 1 column on large screens */}
+            <div>
+              <QuickActions />
+            </div>
+          </div>
 
-        <ComplianceScore
-          overallScore={87}
-          overallStatus="PASS"
-          totalCitations={12}
-          categories={[
-            {
-              id: 'radio-report',
-              name: 'Initial Radio Report',
-              score: 92,
-              status: 'PASS',
-              weight: 0.25,
-              criteriaCount: 4,
-              passCount: 4,
-            },
-            {
-              id: 'command-structure',
-              name: 'Command Structure',
-              score: 85,
-              status: 'PASS',
-              weight: 0.30,
-              criteriaCount: 5,
-              passCount: 5,
-            },
-            {
-              id: 'safety-officer',
-              name: 'Safety Officer Procedures',
-              score: 78,
-              status: 'NEEDS_IMPROVEMENT',
-              weight: 0.20,
-              criteriaCount: 4,
-              passCount: 3,
-            },
-            {
-              id: 'mayday-procedures',
-              name: 'Mayday Procedures',
-              score: 88,
-              status: 'PASS',
-              weight: 0.15,
-              criteriaCount: 3,
-              passCount: 3,
-            },
-            {
-              id: 'resource-management',
-              name: 'Resource Management',
-              score: 95,
-              status: 'PASS',
-              weight: 0.10,
-              criteriaCount: 2,
-              passCount: 2,
-            },
-          ]}
-          variant="detailed"
-          showCategories={true}
-        />
-      </section>
-
-      {/* Section 3: EmergencyTimeline */}
-      <section className="max-w-3xl mx-auto space-y-4">
-        <div>
-          <h2 className="text-2xl font-bold mb-1">3. Emergency Timeline</h2>
-          <p className="text-sm text-muted-foreground">
-            Visual timeline of emergency events during incident
-          </p>
-        </div>
-
-        <EmergencyTimeline
-          events={[
-            {
-              id: '1',
-              timestamp: 45,
-              type: 'mayday',
-              confidence: 0.98,
-              severity: 'critical',
-              text: 'Mayday mayday mayday, firefighter down on second floor rear',
-              context: 'Engine 2 reporting emergency situation with 2 firefighters trapped',
-            },
-            {
-              id: '2',
-              timestamp: 83,
-              type: 'emergency',
-              confidence: 0.87,
-              severity: 'high',
-              text: 'Emergency traffic, partial roof collapse in sector charlie',
-              context: 'Ladder 2 requesting immediate evacuation of all personnel',
-            },
-            {
-              id: '3',
-              timestamp: 135,
-              type: 'evacuation',
-              confidence: 0.92,
-              severity: 'critical',
-              text: 'All units evacuate the structure immediately, evacuate evacuate',
-              context: 'Incident command ordering full evacuation due to structural instability',
-            },
-            {
-              id: '4',
-              timestamp: 195,
-              type: 'all_clear',
-              confidence: 0.95,
-              severity: 'medium',
-              text: 'All units accounted for, PAR complete, all clear',
-              context: 'Safety officer confirming all personnel are accounted for',
-            },
-          ]}
-          maxHeight={500}
-          showConfidence={true}
-          variant="detailed"
-        />
-      </section>
-
-      {/* Section 4: UnitStatus */}
-      <section className="max-w-6xl mx-auto space-y-4">
-        <div>
-          <h2 className="text-2xl font-bold mb-1">4. Unit Status</h2>
-          <p className="text-sm text-muted-foreground">
-            Fire apparatus/unit status indicators
-          </p>
-        </div>
-
-        <UnitStatus
-          units={[
-            {
-              id: 'eng-1',
-              name: 'Engine 1',
-              type: 'engine',
-              status: 'on-scene',
-              personnel: 4,
-              lastUpdate: new Date(Date.now() - 5 * 60 * 1000), // 5 minutes ago
-              location: '123 Main Street - Structure Fire',
-            },
-            {
-              id: 'eng-2',
-              name: 'Engine 2',
-              type: 'engine',
-              status: 'on-scene',
-              personnel: 4,
-              lastUpdate: new Date(Date.now() - 3 * 60 * 1000),
-              location: '123 Main Street - Structure Fire',
-            },
-            {
-              id: 'lad-2',
-              name: 'Ladder 2',
-              type: 'ladder',
-              status: 'dispatched',
-              personnel: 5,
-              lastUpdate: new Date(Date.now() - 12 * 60 * 1000),
-              location: 'En route',
-            },
-            {
-              id: 'res-3',
-              name: 'Rescue 3',
-              type: 'rescue',
-              status: 'available',
-              personnel: 2,
-              lastUpdate: new Date(Date.now() - 2 * 60 * 1000),
-            },
-            {
-              id: 'bat-1',
-              name: 'Battalion 1',
-              type: 'chief',
-              status: 'on-scene',
-              personnel: 2,
-              lastUpdate: new Date(Date.now() - 8 * 60 * 1000),
-              location: '123 Main Street - Incident Command',
-            },
-            {
-              id: 'ems-1',
-              name: 'Medic 1',
-              type: 'ems',
-              status: 'returning',
-              personnel: 2,
-              lastUpdate: new Date(Date.now() - 15 * 60 * 1000),
-            },
-          ]}
-          layout="grid"
-          variant="detailed"
-          onUnitClick={(unitId) => {
-            console.log('Unit clicked:', unitId)
-            alert(`Unit Details: ${unitId}`)
-          }}
-        />
-      </section>
-
-      {/* Footer */}
-      <footer className="max-w-6xl mx-auto pt-12 border-t">
-        <div className="text-center text-sm text-muted-foreground space-y-2">
-          <p className="font-semibold">Emergency UI Components - Phase 1 Complete</p>
-          <p>4 Production-Ready Components | 52 Storybook Stories | Full TypeScript Support</p>
-          <p>WCAG 2.2 AAA Compliant | Dark Mode | Responsive Design</p>
-        </div>
-      </footer>
+          {/* Welcome Message for Empty State */}
+          {stats && stats.incidents.total === 0 && (
+            <div className="mt-8 text-center py-12 border rounded-lg bg-muted/30">
+              <h2 className="text-2xl font-semibold mb-2">
+                Welcome to the Radio Transcription System
+              </h2>
+              <p className="text-muted-foreground mb-6 max-w-md mx-auto">
+                Get started by uploading your first radio traffic recording or creating a compliance template.
+              </p>
+            </div>
+          )}
+        </>
+      )}
     </div>
-  )
+  );
 }
