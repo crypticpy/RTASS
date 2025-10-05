@@ -374,18 +374,18 @@ export default function TemplatesPage() {
   };
 
   return (
-    <div className="container mx-auto py-8 max-w-7xl">
+    <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-7xl">
       {/* Header */}
-      <div className="mb-8">
-        <div className="flex items-center justify-between mb-4">
+      <div className="mb-6 sm:mb-8">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
           <div>
-            <h1 className="text-3xl font-bold">Audit Templates</h1>
-            <p className="text-muted-foreground mt-2">
+            <h1 className="text-2xl sm:text-3xl font-bold">Audit Templates</h1>
+            <p className="text-sm sm:text-base text-muted-foreground mt-2">
               Manage compliance audit templates for incident analysis
             </p>
           </div>
-          <Button onClick={() => router.push('/policy/upload')} className="gap-2">
-            <Plus className="h-4 w-4" />
+          <Button onClick={() => router.push('/policy/upload')} className="gap-2 w-full sm:w-auto">
+            <Plus className="h-4 w-4" aria-hidden="true" />
             Upload Policy & Generate Template
           </Button>
         </div>

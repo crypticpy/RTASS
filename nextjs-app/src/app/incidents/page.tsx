@@ -166,19 +166,19 @@ export default function IncidentsPage() {
   };
 
   return (
-    <div className="container mx-auto px-4 py-8">
+    <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-7xl">
       {/* Header */}
-      <div className="mb-8">
-        <div className="flex items-center justify-between mb-4">
+      <div className="mb-6 sm:mb-8">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
           <div>
-            <h1 className="text-3xl font-bold mb-2">Incidents</h1>
-            <p className="text-muted-foreground">
+            <h1 className="text-2xl sm:text-3xl font-bold mb-2">Incidents</h1>
+            <p className="text-sm sm:text-base text-muted-foreground">
               View and manage radio traffic incidents and compliance reports
             </p>
           </div>
           <Link href="/incidents/upload">
-            <Button size="lg">
-              <Upload className="h-4 w-4 mr-2" />
+            <Button size="lg" className="w-full sm:w-auto">
+              <Upload className="h-4 w-4 mr-2" aria-hidden="true" />
               Upload New Incident
             </Button>
           </Link>

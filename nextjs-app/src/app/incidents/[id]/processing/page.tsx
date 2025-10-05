@@ -89,10 +89,10 @@ export default function IncidentProcessingPage() {
   };
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-3xl">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold mb-2">Processing Incident</h1>
-        <p className="text-muted-foreground">
+    <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-4xl">
+      <div className="mb-6 sm:mb-8">
+        <h1 className="text-2xl sm:text-3xl font-bold mb-2">Processing Incident</h1>
+        <p className="text-sm sm:text-base text-muted-foreground">
           Transcribing audio and analyzing compliance. This may take 5-10 minutes.
         </p>
       </div>

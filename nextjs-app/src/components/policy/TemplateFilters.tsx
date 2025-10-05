@@ -73,22 +73,26 @@ export function TemplateFilters({
       </Select>
 
       {/* View Mode Toggle */}
-      <div className="flex items-center gap-1 border rounded-md">
+      <div className="flex items-center gap-1 border rounded-md" role="group" aria-label="View mode">
         <Button
           variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
           size="sm"
           onClick={() => onViewModeChange('grid')}
           className="h-9 w-9 p-0"
+          aria-label="Grid view"
+          aria-pressed={viewMode === 'grid'}
         >
-          <Grid className="h-4 w-4" />
+          <Grid className="h-4 w-4" aria-hidden="true" />
         </Button>
         <Button
           variant={viewMode === 'list' ? 'secondary' : 'ghost'}
           size="sm"
           onClick={() => onViewModeChange('list')}
           className="h-9 w-9 p-0"
+          aria-label="List view"
+          aria-pressed={viewMode === 'list'}
         >
-          <List className="h-4 w-4" />
+          <List className="h-4 w-4" aria-hidden="true" />
         </Button>
       </div>
     </div>

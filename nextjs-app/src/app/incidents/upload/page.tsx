@@ -151,17 +151,17 @@ export default function IncidentUploadPage() {
     audioFile !== null && audioMetadata !== null && selectedTemplateIds.length > 0;
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-4xl">
+    <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-5xl">
       {/* Header */}
-      <div className="mb-8">
+      <div className="mb-6 sm:mb-8">
         <Link href="/incidents">
-          <Button variant="ghost" size="sm" className="mb-4">
-            <ArrowLeft className="h-4 w-4 mr-2" />
+          <Button variant="ghost" size="sm" className="mb-4" aria-label="Back to Incidents">
+            <ArrowLeft className="h-4 w-4 mr-2" aria-hidden="true" />
             Back to Incidents
           </Button>
         </Link>
-        <h1 className="text-3xl font-bold mb-2">Upload & Analyze Radio Traffic</h1>
-        <p className="text-muted-foreground">
+        <h1 className="text-2xl sm:text-3xl font-bold mb-2">Upload & Analyze Radio Traffic</h1>
+        <p className="text-sm sm:text-base text-muted-foreground">
           Upload an audio file, add incident details, and select templates for analysis
         </p>
       </div>

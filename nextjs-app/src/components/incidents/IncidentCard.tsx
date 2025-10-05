@@ -105,8 +105,8 @@ export function IncidentCard({ incident, onView, onDelete, className }: Incident
   return (
     <Card
       className={cn(
-        'hover:shadow-md transition-all',
-        incident.maydayDetected && 'border-red-300 dark:border-red-700',
+        'hover:shadow-md transition-all duration-200',
+        incident.maydayDetected && 'border-destructive/50 dark:border-destructive',
         className
       )}
     >
@@ -200,9 +200,10 @@ export function IncidentCard({ incident, onView, onDelete, className }: Incident
                 variant="outline"
                 size="sm"
                 onClick={() => onDelete(incident.id)}
-                className="text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950"
+                className="text-destructive dark:text-destructive hover:bg-destructive/10"
+                aria-label={`Delete incident ${incident.name}`}
               >
-                <Trash2 className="h-4 w-4" />
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
               </Button>
             )}
           </div>

@@ -321,8 +321,9 @@ export function AudioUploader({
                 onClick={handleRemove}
                 disabled={disabled}
                 className="shrink-0"
+                aria-label={`Remove ${selectedFile.name}`}
               >
-                <X className="h-4 w-4" />
+                <X className="h-4 w-4" aria-hidden="true" />
               </Button>
             </div>
           </CardContent>

@@ -116,6 +116,7 @@ export function ProcessingStatus({
                 'h-3',
                 progress.stage === 'complete' && 'bg-green-100 dark:bg-green-950'
               )}
+              aria-label={`Processing progress: ${Math.round(progress.progress)}%`}
             />
             <div className="flex items-center justify-between text-sm text-muted-foreground">
               <span>{Math.round(progress.progress)}% complete</span>
@@ -127,8 +128,8 @@ export function ProcessingStatus({
         )}
 
         {/* Current Stage */}
-        <div className={cn('flex items-center gap-3', config.color)}>
-          <StageIcon className={cn('h-6 w-6', isProcessing && 'animate-spin')} />
+        <div className={cn('flex items-center gap-3', config.color)} role="status" aria-live="polite" aria-atomic="true">
+          <StageIcon className={cn('h-6 w-6', isProcessing && 'animate-spin')} aria-hidden="true" />
           <div className="flex-1">
             <p className="font-medium">{config.label}</p>
             <p className="text-sm text-muted-foreground mt-0.5">{progress.message}</p>

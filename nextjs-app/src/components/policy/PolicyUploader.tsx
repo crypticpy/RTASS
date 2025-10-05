@@ -232,8 +232,9 @@ export function PolicyUploader({
                       uploadedFile.status === 'processing'
                     }
                     className="h-8 w-8 p-0"
+                    aria-label={`Remove ${uploadedFile.file.name}`}
                   >
-                    <X className="h-4 w-4" />
+                    <X className="h-4 w-4" aria-hidden="true" />
                   </Button>
                 </div>
               </Card>

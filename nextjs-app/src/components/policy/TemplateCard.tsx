@@ -86,7 +86,7 @@ export function TemplateCard({
   );
 
   return (
-    <Card className="p-6 hover:shadow-lg transition-shadow">
+    <Card className="p-6 hover:shadow-md transition-all duration-200">
       <div className="space-y-4">
         {/* Header */}
         <div className="flex items-start justify-between">
@@ -108,36 +108,36 @@ export function TemplateCard({
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                <MoreVertical className="h-4 w-4" />
+              <Button variant="ghost" size="sm" className="h-8 w-8 p-0" aria-label="Template actions menu">
+                <MoreVertical className="h-4 w-4" aria-hidden="true" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={() => onView?.(template.id)}>
-                <Eye className="h-4 w-4 mr-2" />
+                <Eye className="h-4 w-4 mr-2" aria-hidden="true" />
                 View Details
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => onEdit?.(template.id)}>
-                <Edit className="h-4 w-4 mr-2" />
+                <Edit className="h-4 w-4 mr-2" aria-hidden="true" />
                 Edit Template
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => onDuplicate?.(template.id)}>
-                <Copy className="h-4 w-4 mr-2" />
+                <Copy className="h-4 w-4 mr-2" aria-hidden="true" />
                 Duplicate
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               {template.status === 'ACTIVE' && (
                 <DropdownMenuItem onClick={() => onArchive?.(template.id)}>
-                  <Archive className="h-4 w-4 mr-2" />
+                  <Archive className="h-4 w-4 mr-2" aria-hidden="true" />
                   Archive
                 </DropdownMenuItem>
               )}
               {template.status === 'DRAFT' && (
                 <DropdownMenuItem
                   onClick={() => onDelete?.(template.id)}
-                  className="text-red-600"
+                  className="text-destructive dark:text-destructive"
                 >
-                  <Trash2 className="h-4 w-4 mr-2" />
+                  <Trash2 className="h-4 w-4 mr-2" aria-hidden="true" />
                   Delete
                 </DropdownMenuItem>
               )}
@@ -209,10 +209,10 @@ export function TemplateCard({
               <span
                 className={`font-medium ${
                   template.averageScore >= 0.85
-                    ? 'text-green-600'
+                    ? 'text-green-600 dark:text-green-400'
                     : template.averageScore >= 0.7
-                      ? 'text-yellow-600'
-                      : 'text-red-600'
+                      ? 'text-amber-600 dark:text-amber-400'
+                      : 'text-destructive'
                 }`}
               >
                 {formatScore(template.averageScore)}

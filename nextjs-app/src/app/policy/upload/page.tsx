@@ -136,21 +136,22 @@ export default function PolicyUploadPage() {
   };
 
   return (
-    <div className="container mx-auto py-8 max-w-4xl">
+    <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-5xl">
       {/* Header */}
-      <div className="mb-6">
+      <div className="mb-6 sm:mb-8">
         <Button
           variant="ghost"
           size="sm"
           onClick={() => router.push('/policy/templates')}
           className="mb-4"
+          aria-label="Back to Templates"
         >
-          <ArrowLeft className="h-4 w-4 mr-2" />
+          <ArrowLeft className="h-4 w-4 mr-2" aria-hidden="true" />
           Back to Templates
         </Button>
         <div className="space-y-2">
-          <h1 className="text-3xl font-bold">Upload Policy & Generate Template</h1>
-          <p className="text-muted-foreground">
+          <h1 className="text-2xl sm:text-3xl font-bold">Upload Policy & Generate Template</h1>
+          <p className="text-sm sm:text-base text-muted-foreground">
             Upload your department policy documents and let AI generate a compliance
             audit template
           </p>

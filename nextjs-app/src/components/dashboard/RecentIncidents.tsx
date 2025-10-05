@@ -121,21 +121,21 @@ export function RecentIncidents({ incidents, maxItems = 5, className }: RecentIn
               <div
                 key={incident.id}
                 className={cn(
-                  'flex items-start gap-4 p-4 rounded-lg border transition-colors hover:bg-accent',
-                  incident.hasMayday && 'border-red-300 dark:border-red-700'
+                  'flex items-start gap-4 p-4 rounded-lg border transition-all duration-200 hover:bg-accent hover:shadow-sm',
+                  incident.hasMayday && 'border-destructive/50 dark:border-destructive'
                 )}
               >
                 {/* Icon */}
                 <div className={cn(
                   'rounded-full p-2 shrink-0',
                   incident.hasMayday
-                    ? 'bg-red-100 dark:bg-red-950'
-                    : 'bg-blue-100 dark:bg-blue-950'
+                    ? 'bg-destructive/10 dark:bg-destructive/20'
+                    : 'bg-primary/10 dark:bg-primary/20'
                 )}>
                   {incident.hasMayday ? (
-                    <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400" />
+                    <AlertTriangle className="h-4 w-4 text-destructive" aria-hidden="true" />
                   ) : (
-                    <Radio className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                    <Radio className="h-4 w-4 text-primary" aria-hidden="true" />
                   )}
                 </div>
 
@@ -191,7 +191,7 @@ export function RecentIncidents({ incidents, maxItems = 5, className }: RecentIn
 
                 {/* View button */}
                 <Link href={`/incidents/${incident.id}/report`}>
-                  <Button variant="ghost" size="sm" className="shrink-0">
+                  <Button variant="ghost" size="sm" className="shrink-0" aria-label={`View incident ${incident.number}`}>
                     View
                   </Button>
                 </Link>
