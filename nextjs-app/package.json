@@ -7,6 +7,10 @@
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:policy": "jest __tests__/services/policyExtraction.test.ts __tests__/services/templateGeneration.test.ts",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"
   },
@@ -32,6 +36,7 @@
     "mammoth": "^1.11.0",
     "next": "15.5.4",
     "next-themes": "^0.4.6",
+    "officeparser": "^5.2.1",
     "openai": "^6.1.0",
     "pdf-parse": "^2.1.7",
     "react": "19.1.0",
