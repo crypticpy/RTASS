@@ -291,6 +291,19 @@ export const UnitStatus = React.memo(function UnitStatus({
     )
   }
 
+  // Count units by status (memoized to avoid recalculating on every render)
+  const statusCounts = React.useMemo(() => {
+    return {
+      total: units.length,
+      available: units.filter(u => u.status === 'available').length,
+      dispatched: units.filter(u => u.status === 'dispatched').length,
+      'on-scene': units.filter(u => u.status === 'on-scene').length,
+      returning: units.filter(u => u.status === 'returning').length,
+      'out-of-service': units.filter(u => u.status === 'out-of-service').length,
+      active: units.filter(u => u.status === 'on-scene' || u.status === 'dispatched').length,
+    }
+  }, [units])
+
   // Empty state
   if (units.length === 0) {
     return (
@@ -315,19 +328,6 @@ export const UnitStatus = React.memo(function UnitStatus({
       </Card>
     )
   }
-
-  // Count units by status (memoized to avoid recalculating on every render)
-  const statusCounts = React.useMemo(() => {
-    return {
-      total: units.length,
-      available: units.filter(u => u.status === 'available').length,
-      dispatched: units.filter(u => u.status === 'dispatched').length,
-      'on-scene': units.filter(u => u.status === 'on-scene').length,
-      returning: units.filter(u => u.status === 'returning').length,
-      'out-of-service': units.filter(u => u.status === 'out-of-service').length,
-      active: units.filter(u => u.status === 'on-scene' || u.status === 'dispatched').length,
-    }
-  }, [units])
 
   return (
     <div className={cn("w-full space-y-4", className)}>

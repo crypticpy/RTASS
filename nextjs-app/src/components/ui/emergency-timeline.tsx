@@ -144,8 +144,14 @@ export const EmergencyTimeline = React.memo(function EmergencyTimeline({
     },
   }
 
+  // Sort events by timestamp (memoized to avoid re-sorting on every render)
+  const sortedEvents = React.useMemo(
+    () => [...events].sort((a, b) => a.timestamp - b.timestamp),
+    [events]
+  )
+
   // Empty state
-  if (events.length === 0) {
+  if (sortedEvents.length === 0) {
     return (
       <Card className={cn("w-full", className)}>
         <CardHeader>
@@ -171,12 +177,6 @@ export const EmergencyTimeline = React.memo(function EmergencyTimeline({
       </Card>
     )
   }
-
-  // Sort events by timestamp (memoized to avoid re-sorting on every render)
-  const sortedEvents = React.useMemo(
-    () => [...events].sort((a, b) => a.timestamp - b.timestamp),
-    [events]
-  )
 
   return (
     <Card className={cn("w-full", className)}>
@@ -273,7 +273,7 @@ export const EmergencyTimeline = React.memo(function EmergencyTimeline({
 
                         {/* Event text */}
                         <p className="text-sm leading-relaxed mb-3 break-words overflow-wrap-anywhere">
-                          "{event.text}"
+                          &ldquo;{event.text}&rdquo;
                         </p>
 
                         {/* Context (if available) */}

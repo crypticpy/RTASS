@@ -126,7 +126,6 @@ export async function isDatabaseConnected(): Promise<boolean> {
 export async function executeTransaction<T>(
   callback: (tx: PrismaTransaction) => Promise<T>
 ): Promise<T> {
-  // @ts-ignore - Prisma transaction type is complex, but this works correctly
   return await prisma.$transaction(callback);
 }
 

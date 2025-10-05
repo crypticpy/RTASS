@@ -342,7 +342,7 @@ export function TemplateEditor({
                                           )}
                                           {criterion.sourceText && (
                                             <p className="italic mt-1">
-                                              "{criterion.sourceText}"
+                                              &ldquo;{criterion.sourceText}&rdquo;
                                             </p>
                                           )}
                                         </div>
@@ -366,7 +366,7 @@ export function TemplateEditor({
 
                             {category.criteria.length === 0 && (
                               <div className="text-sm text-muted-foreground text-center py-4">
-                                No criteria yet. Click "Add Criterion" to get started.
+                                No criteria yet. Click &ldquo;Add Criterion&rdquo; to get started.
                               </div>
                             )}
                           </div>

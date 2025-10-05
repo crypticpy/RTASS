@@ -127,3 +127,127 @@ export const SUPPORTED_AUDIO_FORMATS = [
 
 export const MAX_AUDIO_FILE_SIZE = 500 * 1024 * 1024; // 500MB
 export const MAX_AUDIO_DURATION = 4 * 60 * 60; // 4 hours in seconds
+
+/**
+ * Report Viewing Types (Phase 4)
+ * Types for incident report viewing with compliance results, timeline, and transcript
+ */
+
+export type ComplianceStatus = 'PASS' | 'NEEDS_IMPROVEMENT' | 'FAIL';
+
+export interface ComplianceCategory {
+  id: string;
+  name: string;
+  score: number; // 0-100
+  status: ComplianceStatus;
+  weight: number; // 0-1 (percentage)
+  criteriaCount: number;
+  passCount: number;
+}
+
+export interface ComplianceResults {
+  overallScore: number;
+  overallStatus: ComplianceStatus;
+  totalCitations: number;
+  categories: ComplianceCategory[];
+}
+
+export interface ReportStats {
+  criticalIssues: number;
+  warnings: number;
+  strengths: number;
+  totalCriteria: number;
+}
+
+export type FindingSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+
+export interface Finding {
+  id: string;
+  severity?: FindingSeverity;
+  category: string;
+  criterion: string;
+  timestamp: number; // seconds
+  evidence: string;
+  reasoning?: string;
+  impact?: string;
+  recommendation?: string;
+  note?: string; // For strengths
+}
+
+export type TimelineEventType =
+  | 'mayday'
+  | 'emergency'
+  | 'evacuation'
+  | 'all_clear'
+  | 'violation'
+  | 'compliance'
+  | 'info';
+
+export type TimelineEventSeverity = 'critical' | 'high' | 'medium' | 'low';
+
+export type TimelineEventSource = 'KEYWORD_DETECTION' | 'COMPLIANCE_AUDIT';
+
+export interface TimelineEvent {
+  id: string;
+  timestamp: number; // seconds from start
+  type: TimelineEventType;
+  severity: TimelineEventSeverity;
+  confidence: number; // 0-1
+  text: string;
+  context?: string;
+  source: TimelineEventSource;
+  transcriptSegmentId?: string;
+  criterionId?: string;
+  auditId?: string;
+}
+
+export interface TranscriptSegment {
+  id: string;
+  startTime: number; // seconds
+  endTime: number; // seconds
+  text: string;
+  speaker?: string;
+  confidence?: number; // 0-1
+}
+
+export interface EmergencyKeywordData {
+  count: number;
+  timestamps: number[];
+}
+
+export interface TranscriptData {
+  segments: TranscriptSegment[];
+  emergencyKeywords: Record<string, EmergencyKeywordData>;
+  duration: number; // seconds
+  wordCount: number;
+  language?: string;
+}
+
+export interface IncidentReport {
+  incident: Incident;
+  overallScore: number;
+  overallStatus: ComplianceStatus;
+  stats: ReportStats;
+  narrative?: string;
+  compliance: ComplianceResults;
+  criticalFindings: Finding[];
+  strengths: Finding[];
+  timeline: TimelineEvent[];
+  transcript: TranscriptData;
+}
+
+/**
+ * Emergency Event (for EmergencyTimeline component)
+ * Subset of TimelineEvent focused on emergency keywords
+ */
+export type EmergencyEventType = 'mayday' | 'emergency' | 'evacuation' | 'all_clear' | 'info';
+
+export interface EmergencyEvent {
+  id: string;
+  timestamp: number; // seconds from start
+  type: EmergencyEventType;
+  confidence: number; // 0-1
+  severity: TimelineEventSeverity;
+  text: string; // Segment text
+  context?: string; // Surrounding context
+}
