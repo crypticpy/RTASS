@@ -88,7 +88,7 @@ export async function POST(request: NextRequest) {
         {
           error: 'VALIDATION_ERROR',
           message: 'Invalid request body',
-          details: { issues: error.errors },
+          details: { issues: error.issues },
           statusCode: 400,
         },
         { status: 400 }

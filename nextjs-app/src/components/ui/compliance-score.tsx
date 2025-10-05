@@ -351,5 +351,4 @@ export const ComplianceScore = React.memo(function ComplianceScore({
   )
 })
 
-// Export types for documentation
-export type { ComplianceScoreProps, ComplianceCategory }
+// Types already exported above

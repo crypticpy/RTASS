@@ -328,4 +328,3 @@ export const TranscriptionProgress = React.memo(function TranscriptionProgress({
 })
 
 // Export prop types for documentation
-export type { TranscriptionProgressProps }

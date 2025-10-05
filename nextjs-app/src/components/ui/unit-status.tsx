@@ -72,6 +72,13 @@ export const UnitStatus = React.memo(function UnitStatus({
   onUnitClick,
   className,
 }: UnitStatusProps) {
+  // Track if component has mounted to avoid hydration mismatch
+  const [isMounted, setIsMounted] = React.useState(false)
+
+  React.useEffect(() => {
+    setIsMounted(true)
+  }, [])
+
   // Format relative time (e.g., "2m ago")
   const formatRelativeTime = (date: Date): string => {
     // Validate date
@@ -274,8 +281,8 @@ export const UnitStatus = React.memo(function UnitStatus({
               layout === 'list' && "min-w-[100px] justify-end"
             )}>
               <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-              <time dateTime={unit.lastUpdate.toISOString()}>
-                {formatRelativeTime(unit.lastUpdate)}
+              <time dateTime={unit.lastUpdate.toISOString()} suppressHydrationWarning>
+                {isMounted ? formatRelativeTime(unit.lastUpdate) : 'Loading...'}
               </time>
             </div>
           </div>
@@ -370,4 +377,3 @@ export const UnitStatus = React.memo(function UnitStatus({
 })
 
 // Export types for documentation
-export type { UnitStatusProps, Unit, UnitType, UnitStatusType }

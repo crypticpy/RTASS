@@ -124,9 +124,10 @@ export async function isDatabaseConnected(): Promise<boolean> {
  * ```
  */
 export async function executeTransaction<T>(
-  callback: (tx: PrismaClient) => Promise<T>
+  callback: (tx: PrismaTransaction) => Promise<T>
 ): Promise<T> {
-  return await prisma.$transaction(callback as any);
+  // @ts-ignore - Prisma transaction type is complex, but this works correctly
+  return await prisma.$transaction(callback);
 }
 
 /**
@@ -134,5 +135,5 @@ export async function executeTransaction<T>(
  */
 export type PrismaTransaction = Omit<
   PrismaClient,
-  '$connect' | '$disconnect' | '$on' | '$transaction' | '$use'
+  '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
 >;

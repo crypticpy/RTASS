@@ -85,7 +85,13 @@ export async function POST(request: NextRequest) {
     // Create File object from buffer
     // Note: In a real scenario, we'd use the actual file from storage
     // For now, we'll create a temporary File object
-    const audioFile = new File([fileBuffer], validated.fileName, {
+    const arrayBuffer = new ArrayBuffer(fileBuffer.length);
+    const view = new Uint8Array(arrayBuffer);
+    for (let i = 0; i < fileBuffer.length; i++) {
+      view[i] = fileBuffer[i];
+    }
+    const blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
+    const audioFile = new File([blob], validated.fileName, {
       type: 'audio/mpeg', // This should be determined from the actual file
     });
 

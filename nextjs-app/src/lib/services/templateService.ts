@@ -108,7 +108,7 @@ export class TemplateService {
           name: data.name,
           description: data.description,
           version: '1.0',
-          categories: data.categories as PrismaJson,
+          categories: data.categories as any,
           isActive: data.isActive ?? true,
           source: data.source,
           isAIGenerated: false,

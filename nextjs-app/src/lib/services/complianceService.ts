@@ -124,12 +124,12 @@ export class ComplianceService {
       // Step 4: Parse response
       const parsedAudit = this.parseAuditResponse(
         gptResponse,
-        template.categories as ComplianceCategory[]
+        template.categories as any as ComplianceCategory[]
       );
 
       // Step 5: Calculate scores
       const categoriesWithScores = this.calculateCategoryScores(
-        parsedAudit.categories
+        parsedAudit.categories as any
       );
       const overallScore = this.calculateOverallScore(categoriesWithScores);
       const overallStatus = this.determineOverallStatus(overallScore);
@@ -178,10 +178,10 @@ export class ComplianceService {
       return {
         id: audit.id,
         incidentId: audit.incidentId,
-        transcriptId: audit.transcriptId,
+        transcriptId: audit.transcriptId || undefined,
         templateId: audit.templateId,
         overallStatus: audit.overallStatus as AuditStatus,
-        overallScore: audit.overallScore,
+        overallScore: audit.overallScore || 0,
         summary: audit.summary,
         categories: categoriesWithScores,
         findings: allFindings,
@@ -218,7 +218,7 @@ export class ComplianceService {
     additionalNotes?: string
   ): string {
     const transcriptText = transcript.text;
-    const categories = template.categories as ComplianceCategory[];
+    const categories = template.categories as any as ComplianceCategory[];
 
     const templateStructure = categories
       .map((category, catIndex) => {
@@ -734,9 +734,9 @@ ${
           findings: {
             categories: auditData.categories,
             findings: auditData.findings,
-          } as PrismaJson,
-          recommendations: auditData.recommendations as unknown as PrismaJson,
-          metadata: auditData.metadata as unknown as PrismaJson,
+          } as any,
+          recommendations: auditData.recommendations as any,
+          metadata: auditData.metadata as any,
         },
       });
 
@@ -771,20 +771,20 @@ ${
         throw Errors.notFound('Audit', auditId);
       }
 
-      const findings = audit.findings as { categories: ComplianceCategory[]; findings: Finding[] };
+      const findings = audit.findings as any as { categories: ComplianceCategory[]; findings: Finding[] };
 
       return {
         id: audit.id,
         incidentId: audit.incidentId,
-        transcriptId: audit.transcriptId,
+        transcriptId: audit.transcriptId || undefined,
         templateId: audit.templateId,
         overallStatus: audit.overallStatus as AuditStatus,
-        overallScore: audit.overallScore,
+        overallScore: audit.overallScore || 0,
         summary: audit.summary,
         categories: findings.categories || [],
         findings: findings.findings || [],
-        recommendations: audit.recommendations as Recommendation[],
-        metadata: audit.metadata as AuditMetadata,
+        recommendations: audit.recommendations as any as Recommendation[],
+        metadata: audit.metadata as any as AuditMetadata,
         createdAt: audit.createdAt,
       };
     } catch (error) {

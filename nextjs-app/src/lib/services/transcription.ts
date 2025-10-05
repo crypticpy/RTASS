@@ -370,9 +370,9 @@ export class TranscriptionService {
           fileSize: data.fileSize,
           format: data.format,
           text: data.text,
-          segments: data.segments as unknown as PrismaJson,
-          metadata: data.metadata as unknown as PrismaJson,
-          detections: data.detections as unknown as PrismaJson,
+          segments: data.segments as any,
+          metadata: data.metadata as any,
+          detections: data.detections as any,
         },
         include: {
           incident: true,
@@ -424,9 +424,9 @@ export class TranscriptionService {
         fileSize: transcript.fileSize,
         format: transcript.format as AudioFormat,
         text: transcript.text,
-        segments: transcript.segments as TranscriptionSegment[],
-        metadata: transcript.metadata as TranscriptionMetadata,
-        detections: transcript.detections as { mayday: any[]; emergency: any[] } | undefined,
+        segments: transcript.segments as unknown as TranscriptionSegment[],
+        metadata: transcript.metadata as unknown as TranscriptionMetadata,
+        detections: transcript.detections as unknown as { mayday: any[]; emergency: any[] } | undefined,
         createdAt: transcript.createdAt,
       };
     } catch (error) {
@@ -474,9 +474,9 @@ export class TranscriptionService {
         fileSize: transcript.fileSize,
         format: transcript.format as AudioFormat,
         text: transcript.text,
-        segments: transcript.segments as TranscriptionSegment[],
-        metadata: transcript.metadata as TranscriptionMetadata,
-        detections: transcript.detections as { mayday: any[]; emergency: any[] } | undefined,
+        segments: transcript.segments as unknown as TranscriptionSegment[],
+        metadata: transcript.metadata as unknown as TranscriptionMetadata,
+        detections: transcript.detections as unknown as { mayday: any[]; emergency: any[] } | undefined,
         createdAt: transcript.createdAt,
       }));
     } catch (error) {

@@ -193,8 +193,8 @@ export const EmergencyTimeline = React.memo(function EmergencyTimeline({
       </CardHeader>
 
       <CardContent>
-        <ScrollArea style={{ maxHeight: `${maxHeight}px` }} className="pr-4">
-          <div className="relative">
+        <ScrollArea style={{ maxHeight: `${maxHeight}px` }} className="pr-4 overflow-x-hidden">
+          <div className="relative min-w-0">
             {/* Timeline vertical line */}
             <div
               className="absolute left-16 top-0 bottom-0 w-0.5 bg-border"
@@ -212,7 +212,7 @@ export const EmergencyTimeline = React.memo(function EmergencyTimeline({
                 return (
                   <div
                     key={event.id}
-                    className="relative flex gap-4"
+                    className="relative flex gap-4 min-w-0"
                     role="article"
                     aria-label={`${typeConfig.label} event at ${formatTimestamp(event.timestamp)}`}
                   >
@@ -239,19 +239,19 @@ export const EmergencyTimeline = React.memo(function EmergencyTimeline({
                     </div>
 
                     {/* Event card */}
-                    <div className={cn("flex-1", !isLastEvent && "pb-2")}>
+                    <div className={cn("flex-1 min-w-0", !isLastEvent && "pb-2")}>
                       <div
                         className={cn(
-                          "rounded-lg border p-4 transition-all hover:shadow-md",
+                          "rounded-lg border p-4 transition-all hover:shadow-md min-w-0",
                           typeConfig.borderColor,
                           typeConfig.bgColor
                         )}
                       >
                         {/* Event header */}
-                        <div className="flex items-start justify-between gap-3 mb-2">
-                          <div className="flex items-center gap-2">
+                        <div className="flex items-start justify-between gap-3 mb-2 min-w-0">
+                          <div className="flex items-center gap-2 min-w-0 flex-shrink">
                             <EventIcon
-                              className={cn("h-5 w-5", typeConfig.color)}
+                              className={cn("h-5 w-5 flex-shrink-0", typeConfig.color)}
                               aria-hidden="true"
                             />
                             <span
@@ -272,13 +272,13 @@ export const EmergencyTimeline = React.memo(function EmergencyTimeline({
                         </div>
 
                         {/* Event text */}
-                        <p className="text-sm leading-relaxed mb-3">
+                        <p className="text-sm leading-relaxed mb-3 break-words overflow-wrap-anywhere">
                           "{event.text}"
                         </p>
 
                         {/* Context (if available) */}
                         {variant === 'detailed' && event.context && (
-                          <p className="text-xs text-muted-foreground italic border-l-2 border-muted pl-3 mb-3">
+                          <p className="text-xs text-muted-foreground italic border-l-2 border-muted pl-3 mb-3 break-words overflow-wrap-anywhere">
                             Context: {event.context}
                           </p>
                         )}
@@ -324,4 +324,3 @@ export const EmergencyTimeline = React.memo(function EmergencyTimeline({
 })
 
 // Export types for documentation
-export type { EmergencyTimelineProps, EmergencyEvent, EmergencyEventType, EmergencySeverity }

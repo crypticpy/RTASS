@@ -1,0 +1,59 @@
+# ============================================================================
+# Docker Compose Development Overrides
+# ============================================================================
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Purpose:
+#   - Development-specific configurations
+#   - Alternative database names for isolation
+#   - Additional debugging and monitoring tools
+#   - Hot-reload friendly settings
+#
+# ============================================================================
+
+version: '3.9'
+
+services:
+  # ==========================================================================
+  # PostgreSQL Development Overrides
+  # ==========================================================================
+  postgres:
+    environment:
+      # Use separate database for development to avoid conflicts
+      POSTGRES_DB: transcriber_dev
+
+      # Enable additional logging for debugging
+      POSTGRES_LOG_STATEMENT: all
+      POSTGRES_LOG_DURATION: 'on'
+
+    # Expose PostgreSQL logs for development debugging
+    command: >
+      postgres
+      -c log_statement=all
+      -c log_duration=on
+      -c log_connections=on
+      -c log_disconnections=on
+
+  # ==========================================================================
+  # Redis Development Overrides
+  # ==========================================================================
+  redis:
+    # Enable verbose logging for development
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+      --loglevel verbose
+
+  # ==========================================================================
+  # pgAdmin Development Overrides
+  # ==========================================================================
+  pgadmin:
+    environment:
+      # Enable debug mode for pgAdmin
+      PGADMIN_CONFIG_DEBUG: 'True'
+      PGADMIN_CONFIG_CONSOLE_LOG_LEVEL: 10

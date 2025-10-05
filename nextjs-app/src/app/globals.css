@@ -417,4 +417,9 @@
       font-size: 1.875rem;
     }
   }
+
+  /* Text overflow utilities */
+  .overflow-wrap-anywhere {
+    overflow-wrap: anywhere;
+  }
 }

@@ -1,0 +1,215 @@
+# ============================================================================
+# Docker Compose Configuration for Fire Department Radio Transcription System
+# ============================================================================
+#
+# Services:
+#   - PostgreSQL 16 (Database for Prisma ORM)
+#   - Redis 7 (Job tracking and rate limiting)
+#   - pgAdmin 4 (Optional database management UI)
+#
+# Usage:
+#   Start:  docker-compose up -d
+#   Stop:   docker-compose down
+#   Logs:   docker-compose logs -f [service-name]
+#   Status: docker-compose ps
+#
+# Prerequisites:
+#   - Docker Desktop installed and running
+#   - Docker Compose v3.9+
+#   - .env file configured (see .env.docker.example)
+#
+# Data Persistence:
+#   - PostgreSQL data: Named volume 'postgres_data'
+#   - Redis data: Named volume 'redis_data'
+#
+# Health Checks:
+#   - All critical services include health checks for reliability
+#   - Services will restart automatically unless manually stopped
+#
+# ============================================================================
+
+version: '3.9'
+
+services:
+  # ==========================================================================
+  # PostgreSQL Database Service
+  # ==========================================================================
+  # Primary data store for all application data using Prisma ORM
+  # - Stores incidents, transcripts, audits, templates, policy documents
+  # - Configured with UTF-8 encoding for international character support
+  # - Includes health checks and automatic restart policy
+  # ==========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: transcriber-postgres
+    restart: unless-stopped
+
+    ports:
+      - "5433:5432"  # Using 5433 to avoid conflict with existing postgres
+
+    environment:
+      # Database credentials (matches .env configuration)
+      POSTGRES_USER: transcriber
+      POSTGRES_PASSWORD: transcriber_password
+      POSTGRES_DB: transcriber_db
+
+      # Database initialization parameters
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=en_US.UTF-8"
+
+      # Performance tuning for development
+      # For production, adjust based on available resources
+      POSTGRES_SHARED_BUFFERS: 256MB
+      POSTGRES_MAX_CONNECTIONS: 100
+
+    volumes:
+      # Persist database data using named volume
+      - postgres_data:/var/lib/postgresql/data
+
+      # Optional: Custom initialization scripts
+      # - ./init-scripts:/docker-entrypoint-initdb.d
+
+    healthcheck:
+      # Verify PostgreSQL is ready to accept connections
+      test: ["CMD-SHELL", "pg_isready -U transcriber -d transcriber_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    networks:
+      - transcriber-network
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==========================================================================
+  # Redis Cache and Job Queue Service
+  # ==========================================================================
+  # Used for:
+  # - Rate limiting API requests (OpenAI, transcription jobs)
+  # - Session management and caching
+  # - Background job queue tracking
+  # - Real-time data synchronization
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: transcriber-redis
+    restart: unless-stopped
+
+    ports:
+      - "6380:6379"  # Using 6380 to avoid conflict with existing redis
+
+    # Redis configuration
+    # - appendonly yes: Enable AOF (Append Only File) for data persistence
+    # - requirepass "": No password for development (SET PASSWORD FOR PRODUCTION!)
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+
+    volumes:
+      # Persist Redis data using named volume
+      - redis_data:/data
+
+    healthcheck:
+      # Verify Redis is responding to commands
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+    networks:
+      - transcriber-network
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==========================================================================
+  # pgAdmin Database Management UI (Optional)
+  # ==========================================================================
+  # Web-based PostgreSQL administration tool
+  # - Access at: http://localhost:5050
+  # - Login: admin@transcriber.local / admin
+  # - Use for database inspection, query execution, and schema management
+  # ==========================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: transcriber-pgadmin
+    restart: unless-stopped
+
+    ports:
+      - "5050:80"
+
+    environment:
+      # pgAdmin credentials
+      PGADMIN_DEFAULT_EMAIL: admin@transcriber.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+
+      # Configuration
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+
+      # Disable enhanced cookie protection for local development
+      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: 'False'
+
+    volumes:
+      # Persist pgAdmin settings and server configurations
+      - pgadmin_data:/var/lib/pgadmin
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    networks:
+      - transcriber-network
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ============================================================================
+# Named Volumes for Data Persistence
+# ============================================================================
+# These volumes persist data across container restarts and removals
+# To remove all data: docker-compose down -v (CAUTION: Deletes all data!)
+# ============================================================================
+volumes:
+  postgres_data:
+    driver: local
+    name: transcriber_postgres_data
+
+  redis_data:
+    driver: local
+    name: transcriber_redis_data
+
+  pgadmin_data:
+    driver: local
+    name: transcriber_pgadmin_data
+
+# ============================================================================
+# Network Configuration
+# ============================================================================
+# Bridge network for service-to-service communication
+# All services can communicate using service names as hostnames
+# ============================================================================
+networks:
+  transcriber-network:
+    driver: bridge
+    name: transcriber_network
