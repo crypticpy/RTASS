@@ -235,6 +235,57 @@
     @apply bg-background text-foreground font-sans antialiased;
   }
 
+  /* Emergency Color Utilities */
+  .text-fire-red {
+    color: hsl(var(--fire-red));
+  }
+  .bg-fire-red {
+    background-color: hsl(var(--fire-red));
+  }
+  .border-fire-red {
+    border-color: hsl(var(--fire-red));
+  }
+
+  .text-safety-orange {
+    color: hsl(var(--safety-orange));
+  }
+  .bg-safety-orange {
+    background-color: hsl(var(--safety-orange));
+  }
+  .border-safety-orange {
+    border-color: hsl(var(--safety-orange));
+  }
+
+  .text-emergency-green {
+    color: hsl(var(--emergency-green));
+  }
+  .bg-emergency-green {
+    background-color: hsl(var(--emergency-green));
+  }
+  .border-emergency-green {
+    border-color: hsl(var(--emergency-green));
+  }
+
+  .text-ems-blue {
+    color: hsl(var(--ems-blue));
+  }
+  .bg-ems-blue {
+    background-color: hsl(var(--ems-blue));
+  }
+  .border-ems-blue {
+    border-color: hsl(var(--ems-blue));
+  }
+
+  .text-tactical-yellow {
+    color: hsl(var(--tactical-yellow));
+  }
+  .bg-tactical-yellow {
+    background-color: hsl(var(--tactical-yellow));
+  }
+  .border-tactical-yellow {
+    border-color: hsl(var(--tactical-yellow));
+  }
+
   /* Fire Department Typography System */
   h1, h2, h3, h4, h5, h6 {
     @apply font-bold tracking-tight;
@@ -267,6 +318,19 @@
 
 /* Fire Department Utility Classes */
 @layer utilities {
+  /* Screen reader only content */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
   /* Touch-friendly tap targets for gloved hands (minimum 44px) */
   .touch-target {
     min-height: 44px;
