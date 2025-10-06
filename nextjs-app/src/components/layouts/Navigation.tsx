@@ -14,24 +14,14 @@ const navItems = [
     icon: Home,
   },
   {
-    name: 'Policy & Templates',
-    href: '/policy/templates',
-    icon: FileText,
-  },
-  {
     name: 'Incidents',
     href: '/incidents',
     icon: Radio,
   },
   {
-    name: 'Reports',
-    href: '/reports',
-    icon: BarChart3,
-  },
-  {
-    name: 'Settings',
-    href: '/settings',
-    icon: Settings,
+    name: 'Templates',
+    href: '/policy/templates',
+    icon: FileText,
   },
 ];
 

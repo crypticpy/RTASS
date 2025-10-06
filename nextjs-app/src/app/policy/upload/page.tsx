@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Sparkles } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { PolicyUploader } from '@/components/policy/PolicyUploader';
@@ -11,7 +11,6 @@ import { GenerationProgress } from '@/components/policy/GenerationProgress';
 import {
   UploadedFile,
   TemplateGenerationProgress,
-  TemplateConfig,
 } from '@/types/policy';
 import { toast } from 'sonner';
 
@@ -23,7 +22,6 @@ export default function PolicyUploadPage() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [generationProgress, setGenerationProgress] =
     useState<TemplateGenerationProgress | null>(null);
-  const [templateConfig, setTemplateConfig] = useState<TemplateConfig | null>(null);
 
   const handleFilesChange = (files: UploadedFile[]) => {
     setUploadedFiles(files);
@@ -39,18 +37,122 @@ export default function PolicyUploadPage() {
     try {
       setPageState('generating');
 
-      // Simulate progress updates (in real implementation, this would be WebSocket or polling)
+      // Step 1: Upload files and extract content
       setGenerationProgress({
         stage: 'parsing',
         progress: 0,
-        message: `Analyzing ${uploadedFiles.length} policy documents (${uploadedFiles.reduce((sum, f) => sum + (f.file.size / 1024 / 1024), 0).toFixed(1)}MB total)...`,
+        message: `Uploading ${uploadedFiles.length} policy documents (${uploadedFiles.reduce((sum, f) => sum + (f.file.size / 1024 / 1024), 0).toFixed(1)}MB total)...`,
         documentsProcessed: 0,
         totalDocuments: uploadedFiles.length,
       });
 
-      // In real implementation, this would be an API call
-      // For now, we'll simulate the progress
-      await simulateTemplateGeneration(config);
+      const uploadedDocIds: string[] = [];
+
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        const uploadedFile = uploadedFiles[i];
+        const formData = new FormData();
+        formData.append('file', uploadedFile.file);
+
+        setGenerationProgress({
+          stage: 'parsing',
+          progress: (i / uploadedFiles.length) * 20,
+          message: `Uploading and extracting: ${uploadedFile.file.name}...`,
+          documentsProcessed: i,
+          totalDocuments: uploadedFiles.length,
+        });
+
+        const extractResponse = await fetch('/api/policy/extract', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!extractResponse.ok) {
+          const error = await extractResponse.json();
+          throw new Error(error.message || 'Failed to upload policy document');
+        }
+
+        const extractResult = await extractResponse.json();
+        uploadedDocIds.push(extractResult.id);
+      }
+
+      // Step 2: Generate template from first document (or combined if multiple)
+      setGenerationProgress({
+        stage: 'extracting',
+        progress: 25,
+        message: 'Analyzing policy document with GPT-4o...',
+        sectionsIdentified: 0,
+      });
+
+      const generateResponse = await fetch('/api/policy/generate-template', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          policyDocumentId: uploadedDocIds[0],
+          options: {
+            templateName: config.name,
+            documentType: config.documentType,
+            autoDetectSections: config.autoDetectSections,
+            extractCriteria: true,
+            generateRubrics: config.generateRubrics,
+            includeReferences: config.includeReferences,
+            additionalInstructions: config.additionalInstructions,
+          },
+        }),
+      });
+
+      if (!generateResponse.ok) {
+        const error = await generateResponse.json();
+        throw new Error(error.message || 'Failed to generate template');
+      }
+
+      setGenerationProgress({
+        stage: 'rubrics',
+        progress: 60,
+        message: 'Generating compliance categories and criteria...',
+        criteriaExtracted: 0,
+      });
+
+      const generatedTemplate = await generateResponse.json();
+
+      // Step 3: Save the generated template
+      setGenerationProgress({
+        stage: 'prompts',
+        progress: 85,
+        message: 'Saving template to database...',
+      });
+
+      const saveResponse = await fetch('/api/policy/save-template', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          template: generatedTemplate.template,
+          policyDocumentIds: uploadedDocIds,
+          metadata: generatedTemplate.metadata,
+        }),
+      });
+
+      if (!saveResponse.ok) {
+        const error = await saveResponse.json();
+        throw new Error(error.message || 'Failed to save template');
+      }
+
+      const savedTemplate = await saveResponse.json();
+
+      // Complete!
+      setGenerationProgress({
+        stage: 'complete',
+        progress: 100,
+        message: `Template generated successfully! Found ${generatedTemplate.template.categories.length} categories with ${generatedTemplate.template.categories.reduce((sum: number, cat: any) => sum + cat.criteria.length, 0)} criteria. Redirecting to editor...`,
+      });
+
+      // Wait a moment then redirect to template editor
+      setTimeout(() => {
+        router.push(`/policy/templates/${savedTemplate.id}/edit`);
+      }, 2000);
     } catch (error) {
       console.error('Template generation failed:', error);
       setGenerationProgress({
@@ -63,77 +165,6 @@ export default function PolicyUploadPage() {
     }
   };
 
-  const simulateTemplateGeneration = async (config: TemplateConfig) => {
-    // This is a simulation - in real implementation, you'd call your API
-    const stages: Array<{
-      stage: TemplateGenerationProgress['stage'];
-      duration: number;
-    }> = [
-      { stage: 'parsing', duration: 2000 },
-      { stage: 'extracting', duration: 2000 },
-      { stage: 'rubrics', duration: 3000 },
-      { stage: 'prompts', duration: 2000 },
-      { stage: 'complete', duration: 0 },
-    ];
-
-    let totalProgress = 0;
-    const progressIncrement = 100 / stages.length;
-
-    for (const { stage, duration } of stages) {
-      await new Promise((resolve) => setTimeout(resolve, duration));
-      totalProgress += progressIncrement;
-
-      if (stage === 'parsing') {
-        setGenerationProgress({
-          stage,
-          progress: Math.min(totalProgress, 100),
-          message: 'Parsing policy documents...',
-          documentsProcessed: uploadedFiles.length,
-          totalDocuments: uploadedFiles.length,
-          estimatedTimeRemaining: 7,
-        });
-      } else if (stage === 'extracting') {
-        setGenerationProgress({
-          stage,
-          progress: Math.min(totalProgress, 100),
-          message: 'Extracting compliance criteria...',
-          sectionsIdentified: 12,
-          estimatedTimeRemaining: 5,
-        });
-      } else if (stage === 'rubrics') {
-        setGenerationProgress({
-          stage,
-          progress: Math.min(totalProgress, 100),
-          message: 'Generating scoring rubrics...',
-          criteriaExtracted: 38,
-          estimatedTimeRemaining: 3,
-        });
-      } else if (stage === 'prompts') {
-        setGenerationProgress({
-          stage,
-          progress: Math.min(totalProgress, 100),
-          message: 'Creating AI analysis prompts...',
-          estimatedTimeRemaining: 1,
-        });
-      } else if (stage === 'complete') {
-        setGenerationProgress({
-          stage,
-          progress: 100,
-          message: 'Template generated successfully! Redirecting to editor...',
-        });
-
-        // Wait a moment then redirect to template editor
-        setTimeout(() => {
-          // In real implementation, use the actual template ID from the API response
-          router.push('/policy/templates/new-template-id/edit');
-        }, 2000);
-      }
-    }
-  };
-
-  const handleConfigChange = (config: TemplateConfig) => {
-    setTemplateConfig(config);
-  };
 
   return (
     <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-5xl">
@@ -187,7 +218,7 @@ export default function PolicyUploadPage() {
           {/* Actions */}
           <div className="flex items-center justify-between pt-4">
             <Button
-              variant="outline"
+              variant="secondary"
               onClick={() => router.push('/policy/templates')}
             >
               Cancel
@@ -205,7 +236,7 @@ export default function PolicyUploadPage() {
           <GenerationProgress progress={generationProgress} />
           <div className="flex items-center justify-between">
             <Button
-              variant="outline"
+              variant="warning"
               onClick={() => {
                 setPageState('upload');
                 setGenerationProgress(null);
@@ -213,7 +244,7 @@ export default function PolicyUploadPage() {
             >
               Try Again
             </Button>
-            <Button onClick={() => router.push('/policy/templates')}>
+            <Button variant="secondary" onClick={() => router.push('/policy/templates')}>
               Back to Templates
             </Button>
           </div>

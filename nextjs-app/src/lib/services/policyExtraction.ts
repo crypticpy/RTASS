@@ -11,7 +11,6 @@
  * Preserves document structure (headings, sections, tables) and metadata.
  */
 
-import * as pdfParseModule from 'pdf-parse';
 import * as mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
 import * as officeParser from 'officeparser';
@@ -22,9 +21,6 @@ import type {
   ExtractedContent,
   DocumentMetadata,
 } from '@/lib/types';
-
-// Extract the default export from pdf-parse module
-const pdfParse = (pdfParseModule as any).default || pdfParseModule;
 
 // Memory management constants
 const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB - threshold for in-memory processing
@@ -193,6 +189,9 @@ export class PolicyExtractionService {
       // Validate buffer size for memory safety
       validateFileSize(buffer);
 
+      // Dynamic import of pdf-parse (only works server-side)
+      // pdf-parse exports a named 'pdf' function, not a default export
+      const { pdf: pdfParse } = await import('pdf-parse');
       const data = await pdfParse(buffer);
 
       // Extract basic text
@@ -205,7 +204,7 @@ export class PolicyExtractionService {
 
       // Build metadata
       const metadata: DocumentMetadata = {
-        pages: data.numpages,
+        pages: data.total,
         format: 'pdf' as DocumentFormat,
         extractedAt: new Date().toISOString(),
         characterCount: fullText.length,

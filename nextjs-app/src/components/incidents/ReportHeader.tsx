@@ -157,7 +157,7 @@ export function ReportHeader({
 
         <div className="flex items-center gap-2 ml-auto">
           <Button
-            variant="outline"
+            variant="secondary"
             size="sm"
             onClick={handleShare}
             className="gap-2"
@@ -167,7 +167,7 @@ export function ReportHeader({
           </Button>
 
           <Button
-            variant="default"
+            variant="action"
             size="sm"
             onClick={handleExport}
             disabled={isExporting}

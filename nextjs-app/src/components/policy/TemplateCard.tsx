@@ -230,7 +230,7 @@ export function TemplateCard({
         <div className="flex items-center gap-2 pt-2">
           <Button
             size="sm"
-            variant="outline"
+            variant="action"
             onClick={() => onView?.(template.id)}
             className="flex-1"
           >
@@ -238,6 +238,7 @@ export function TemplateCard({
           </Button>
           <Button
             size="sm"
+            variant="success"
             onClick={() => onEdit?.(template.id)}
             className="flex-1"
           >

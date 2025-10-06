@@ -177,7 +177,7 @@ export default function IncidentsPage() {
             </p>
           </div>
           <Link href="/incidents/upload">
-            <Button size="lg" className="w-full sm:w-auto">
+            <Button variant="success" size="lg" className="w-full sm:w-auto">
               <Upload className="h-4 w-4 mr-2" aria-hidden="true" />
               Upload New Incident
             </Button>
@@ -246,7 +246,7 @@ export default function IncidentsPage() {
           </p>
           {!searchQuery && statusFilter === 'ALL' && (
             <Link href="/incidents/upload">
-              <Button>
+              <Button variant="success">
                 <Upload className="h-4 w-4 mr-2" />
                 Upload New Incident
               </Button>

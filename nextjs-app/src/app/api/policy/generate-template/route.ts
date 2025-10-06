@@ -18,7 +18,7 @@ import { z } from 'zod';
  * Request schema validation
  */
 const GenerateTemplateSchema = z.object({
-  policyDocumentId: z.string().cuid(),
+  policyDocumentId: z.string().min(1),
   options: z
     .object({
       templateName: z.string().optional(),

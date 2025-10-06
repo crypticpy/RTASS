@@ -32,7 +32,11 @@ let openaiClient: OpenAI | null = null;
  * @example
  * ```typescript
  * const client = getOpenAIClient();
- * const completion = await client.chat.completions.create({...});
+ * const response = await client.responses.create({
+ *   model: 'gpt-4.1',
+ *   input: 'Your prompt here',
+ *   instructions: 'System instructions here'
+ * });
  * ```
  */
 export function getOpenAIClient(): OpenAI {
@@ -55,17 +59,17 @@ export function getOpenAIClient(): OpenAI {
  * Saves token usage metrics to the SystemMetrics table for analysis
  * and budget tracking.
  *
- * @param {string} model - OpenAI model used (e.g., 'whisper-1', 'gpt-4o')
+ * @param {string} model - OpenAI model used (e.g., 'whisper-1', 'gpt-4.1', 'gpt-4o')
  * @param {TokenUsage} usage - Token usage information
  * @param {string} operationType - Type of operation (e.g., 'transcription', 'compliance_audit')
  *
  * @example
  * ```typescript
- * await trackTokenUsage('gpt-4o', {
+ * await trackTokenUsage('gpt-4.1', {
  *   promptTokens: 500,
  *   completionTokens: 1000,
  *   totalTokens: 1500
- * }, 'compliance_audit');
+ * }, 'policy_analysis');
  * ```
  */
 export async function trackTokenUsage(
@@ -96,9 +100,10 @@ export async function trackTokenUsage(
 /**
  * Calculate estimated cost for token usage
  *
- * Pricing as of January 2025 (approximate):
+ * Pricing as of January 2025:
  * - Whisper: $0.006 per minute
- * - GPT-4o: $0.005 per 1K input tokens, $0.015 per 1K output tokens
+ * - GPT-4.1: $0.002 per 1K input tokens, $0.008 per 1K output tokens (20% cheaper than GPT-4o)
+ * - GPT-4o: $0.0025 per 1K input tokens, $0.010 per 1K output tokens
  * - GPT-4o-mini: $0.00015 per 1K input tokens, $0.0006 per 1K output tokens
  *
  * @param {string} model - OpenAI model name
@@ -107,7 +112,7 @@ export async function trackTokenUsage(
  *
  * @example
  * ```typescript
- * const cost = calculateEstimatedCost('gpt-4o', {
+ * const cost = calculateEstimatedCost('gpt-4.1', {
  *   promptTokens: 500,
  *   completionTokens: 1000,
  *   totalTokens: 1500
@@ -120,12 +125,13 @@ export function calculateEstimatedCost(
   usage: TokenUsage
 ): number {
   const pricing: Record<string, { input: number; output: number }> = {
-    'gpt-4o': { input: 0.005 / 1000, output: 0.015 / 1000 },
+    'gpt-4.1': { input: 0.002 / 1000, output: 0.008 / 1000 },
+    'gpt-4o': { input: 0.0025 / 1000, output: 0.010 / 1000 },
     'gpt-4o-mini': { input: 0.00015 / 1000, output: 0.0006 / 1000 },
     'gpt-4-turbo': { input: 0.01 / 1000, output: 0.03 / 1000 },
   };
 
-  const modelPricing = pricing[model] || pricing['gpt-4o'];
+  const modelPricing = pricing[model] || pricing['gpt-4.1'];
 
   const inputCost = usage.promptTokens * modelPricing.input;
   const outputCost = usage.completionTokens * modelPricing.output;
@@ -250,7 +256,11 @@ export const openaiRateLimiter = new RateLimiter(rateLimiterPerMinute);
  * @example
  * ```typescript
  * const result = await withRateLimit(async () => {
- *   return await client.chat.completions.create({...});
+ *   return await client.responses.create({
+ *     model: 'gpt-4.1',
+ *     input: 'Your prompt',
+ *     instructions: 'System instructions'
+ *   });
  * });
  * ```
  */

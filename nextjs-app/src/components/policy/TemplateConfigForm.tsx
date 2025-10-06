@@ -202,7 +202,7 @@ export function TemplateConfigForm({
 
         {/* Submit Button */}
         <div className="flex items-center justify-end pt-4">
-          <Button type="submit" disabled={disabled} className="gap-2">
+          <Button type="submit" variant="success" disabled={disabled} className="gap-2">
             <Sparkles className="h-4 w-4" />
             <span>Generate Template (AI)</span>
           </Button>

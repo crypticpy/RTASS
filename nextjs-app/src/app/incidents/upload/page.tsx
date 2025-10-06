@@ -230,11 +230,12 @@ export default function IncidentUploadPage() {
         {audioFile && audioMetadata && (
           <div className="flex items-center justify-end gap-4 pt-4 border-t">
             <Link href="/incidents">
-              <Button variant="outline" disabled={isSubmitting}>
+              <Button variant="secondary" disabled={isSubmitting}>
                 Cancel
               </Button>
             </Link>
             <Button
+              variant="success"
               onClick={handleStartAnalysis}
               disabled={!canSubmit || isSubmitting}
               size="lg"

@@ -29,10 +29,10 @@ import { handleServiceError } from '@/lib/services/utils/errorHandlers';
  */
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = params;
+    const { id } = await params;
 
     // Fetch policy document with related templates
     const policyDocument = await prisma.policyDocument.findUnique({
@@ -114,10 +114,10 @@ export async function GET(
  */
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = params;
+    const { id } = await params;
 
     // Check if document exists
     const policyDocument = await prisma.policyDocument.findUnique({

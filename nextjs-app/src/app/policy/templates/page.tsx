@@ -384,7 +384,7 @@ export default function TemplatesPage() {
               Manage compliance audit templates for incident analysis
             </p>
           </div>
-          <Button onClick={() => router.push('/policy/upload')} className="gap-2 w-full sm:w-auto">
+          <Button variant="success" onClick={() => router.push('/policy/upload')} className="gap-2 w-full sm:w-auto">
             <Plus className="h-4 w-4" aria-hidden="true" />
             Upload Policy & Generate Template
           </Button>
@@ -439,6 +439,7 @@ export default function TemplatesPage() {
             </div>
             {!(searchQuery || statusFilter !== 'all') && (
               <Button
+                variant="success"
                 onClick={() => router.push('/policy/upload')}
                 className="gap-2 mt-4"
               >

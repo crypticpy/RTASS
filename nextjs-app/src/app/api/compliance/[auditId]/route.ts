@@ -46,10 +46,10 @@ import { isValidCuid } from '@/lib/utils/validators';
  */
 export async function GET(
   request: NextRequest,
-  { params }: { params: { auditId: string } }
+  { params }: { params: Promise<{ auditId: string }> }
 ) {
   try {
-    const auditId = params.auditId;
+    const { auditId } = await params;
 
     // Validate CUID format
     if (!isValidCuid(auditId)) {

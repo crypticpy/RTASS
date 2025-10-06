@@ -2,7 +2,7 @@
  * Template Generation Service
  * Fire Department Radio Transcription System
  *
- * AI-powered template generation from policy documents using GPT-4o.
+ * AI-powered template generation from policy documents using GPT-4.1.
  * Analyzes policy content, extracts compliance categories and criteria,
  * and generates structured audit templates with NFPA mapping.
  */
@@ -23,7 +23,7 @@ import type {
 } from '@/lib/types';
 
 /**
- * GPT-4o document analysis response
+ * GPT-4.1 document analysis response
  */
 interface GPT4DocumentAnalysis {
   categories: Array<{
@@ -47,7 +47,7 @@ interface GPT4DocumentAnalysis {
 }
 
 /**
- * Criteria enhancement response from GPT-4o
+ * Criteria enhancement response from GPT-4.1
  */
 interface CriteriaEnhancement {
   scoringGuidance: string;
@@ -113,8 +113,8 @@ export class TemplateGenerationService {
       // NOTE: In production, fetch from database. For now, we'll accept extracted content directly
       processingLog.push(`Starting template generation for policy document ${policyDocumentId}`);
 
-      // Step 1: Document analysis with GPT-4o
-      processingLog.push('Analyzing document with GPT-4o...');
+      // Step 1: Document analysis with GPT-4.1
+      processingLog.push('Analyzing document with GPT-4.1...');
       const analysis = await this.analyzeDocument(
         '', // Will be populated from database in actual implementation
         options
@@ -172,7 +172,7 @@ export class TemplateGenerationService {
       // Build metadata
       const metadata: TemplateGenerationMetadata = {
         generatedAt: new Date().toISOString(),
-        aiModel: 'gpt-4o',
+        aiModel: 'gpt-4.1',
         confidence,
         sourceAnalysis: analysis,
         customInstructions: options.additionalInstructions,
@@ -225,11 +225,11 @@ export class TemplateGenerationService {
       if (content.text.length > maxChars) {
         console.warn(
           `[TOKEN_WARNING] Extracted text (${content.text.length} chars) exceeds ` +
-            `GPT-4o optimal size (${maxChars} chars). Truncating to avoid cost/performance issues.`
+            `GPT-4.1 optimal size (${maxChars} chars). Truncating to avoid cost/performance issues.`
         );
         extractedText = content.text.substring(0, maxChars) + '... [truncated]';
         processingLog.push(
-          `Text truncated from ${content.text.length} to ${maxChars} characters for GPT-4o processing`
+          `Text truncated from ${content.text.length} to ${maxChars} characters for GPT-4.1 processing`
         );
       }
 
@@ -277,7 +277,7 @@ export class TemplateGenerationService {
 
       const metadata: TemplateGenerationMetadata = {
         generatedAt: new Date().toISOString(),
-        aiModel: 'gpt-4o',
+        aiModel: 'gpt-4.1',
         confidence,
         sourceAnalysis: analysis,
         customInstructions: options.additionalInstructions,
@@ -305,9 +305,9 @@ export class TemplateGenerationService {
   }
 
   /**
-   * Analyze policy document with GPT-4o
+   * Analyze policy document with GPT-4.1
    *
-   * Sends document text to GPT-4o for compliance analysis.
+   * Sends document text to GPT-4.1 for compliance analysis.
    * Extracts categories, criteria, and regulatory mappings.
    *
    * @private
@@ -381,47 +381,39 @@ Return this exact JSON structure:
 
     try {
       const response = await withRateLimit(async () => {
-        return await client.chat.completions.create(
-          {
-            model: 'gpt-4o',
-            temperature: 0.1, // Low for consistency
-            max_tokens: 4000,
-            response_format: { type: 'json_object' },
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userPrompt },
-            ],
-          },
-          {
-            timeout: 60000, // 60-second timeout to prevent hanging requests
-          }
-        );
+        return await client.responses.create({
+          model: 'gpt-4.1',
+          instructions: systemPrompt,
+          input: userPrompt,
+          temperature: 0.1, // Low for consistency
+          max_output_tokens: 4000,
+        });
       });
 
       // Track token usage
       if (response.usage) {
         await trackTokenUsage(
-          'gpt-4o',
+          'gpt-4.1',
           {
-            promptTokens: response.usage.prompt_tokens,
-            completionTokens: response.usage.completion_tokens,
+            promptTokens: response.usage.input_tokens,
+            completionTokens: response.usage.output_tokens,
             totalTokens: response.usage.total_tokens,
           },
           'policy_analysis'
         );
       }
 
-      // Extract content from GPT-4o response
-      let content = response.choices[0]?.message?.content;
+      // Extract content from GPT-4.1 response
+      let content = response.output_text;
 
       if (!content) {
         throw Errors.externalServiceError(
-          'GPT-4o',
+          'GPT-4.1',
           'Empty response from API. Please try again.'
         );
       }
 
-      // Strip markdown code blocks if GPT-4o wrapped JSON in ```json...```
+      // Strip markdown code blocks if GPT-4.1 wrapped JSON in ```json...```
       content = content.replace(/^```json\s*\n?/m, '').replace(/\n?```\s*$/m, '');
 
       // Parse JSON with error handling
@@ -430,7 +422,7 @@ Return this exact JSON structure:
         analysisResult = JSON.parse(content);
       } catch (error) {
         throw Errors.processingFailed(
-          'GPT-4o response parsing',
+          'GPT-4.1 response parsing',
           `Invalid JSON response: ${(error as Error).message}\n` +
             `Content preview: ${content.substring(0, 200)}...`
         );
@@ -439,7 +431,7 @@ Return this exact JSON structure:
       // Validate response structure
       if (!analysisResult.categories || !Array.isArray(analysisResult.categories)) {
         throw Errors.processingFailed(
-          'GPT-4o response validation',
+          'GPT-4.1 response validation',
           'Response missing required "categories" array. ' +
             `Received keys: ${Object.keys(analysisResult).join(', ')}`
         );
@@ -447,7 +439,7 @@ Return this exact JSON structure:
 
       if (analysisResult.categories.length === 0) {
         throw Errors.processingFailed(
-          'GPT-4o analysis',
+          'GPT-4.1 analysis',
           'No compliance categories identified in document. ' +
             'Document may not contain sufficient policy content.'
         );
@@ -457,7 +449,7 @@ Return this exact JSON structure:
       analysisResult.categories.forEach((category, index) => {
         if (!category.name || !category.criteria || !Array.isArray(category.criteria)) {
           throw Errors.processingFailed(
-            'GPT-4o response validation',
+            'GPT-4.1 response validation',
             `Category ${index + 1} missing required fields (name, criteria array)`
           );
         }

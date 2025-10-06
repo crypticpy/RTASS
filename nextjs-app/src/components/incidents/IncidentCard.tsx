@@ -187,7 +187,7 @@ export function IncidentCard({ incident, onView, onDelete, className }: Incident
           {/* Actions */}
           <div className="flex items-center gap-2 pt-2 border-t">
             <Button
-              variant="default"
+              variant="action"
               size="sm"
               onClick={() => onView(incident.id)}
               className="flex-1"
@@ -197,10 +197,9 @@ export function IncidentCard({ incident, onView, onDelete, className }: Incident
             </Button>
             {onDelete && incident.status !== 'TRANSCRIBING' && incident.status !== 'ANALYZING' && (
               <Button
-                variant="outline"
-                size="sm"
+                variant="destructive"
+                size="icon-sm"
                 onClick={() => onDelete(incident.id)}
-                className="text-destructive dark:text-destructive hover:bg-destructive/10"
                 aria-label={`Delete incident ${incident.name}`}
               >
                 <Trash2 className="h-4 w-4" aria-hidden="true" />
