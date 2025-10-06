@@ -217,69 +217,91 @@ export class TemplateGenerationService {
     const processingLog: string[] = [];
 
     try {
-      processingLog.push('Starting template generation from extracted content');
+      processingLog.push('Starting template generation (multi-turn) from extracted content');
 
-      // Truncate extracted text to avoid token limit
-      const maxChars = 25000;
-      let extractedText = content.text;
-      if (content.text.length > maxChars) {
-        console.warn(
-          `[TOKEN_WARNING] Extracted text (${content.text.length} chars) exceeds ` +
-            `GPT-4.1 optimal size (${maxChars} chars). Truncating to avoid cost/performance issues.`
-        );
-        extractedText = content.text.substring(0, maxChars) + '... [truncated]';
-        processingLog.push(
-          `Text truncated from ${content.text.length} to ${maxChars} characters for GPT-4.1 processing`
-        );
+      // Full-context multi-turn flow: always send complete text each turn
+      const fullText = content.text;
+
+      // Step 1: Discover categories (soft cap ~15)
+      processingLog.push('Step 1: Discovering categories');
+      const discovered = await this.discoverCategoriesFullContext(fullText, options);
+      processingLog.push(`Discovered ${discovered.length} categories`);
+
+      // Step 2: Generate criteria per category (soft cap ~10 each)
+      processingLog.push('Step 2: Generating criteria per category');
+      const criteriaMap: Record<string, ComplianceCriterion[]> = {};
+      // Run sequentially to keep token usage predictable; can be parallelized with rate limit if needed
+      for (const cat of discovered) {
+        const crit = await this.generateCriteriaForCategoryFullContext(fullText, cat.name, options);
+        criteriaMap[cat.name] = crit;
       }
+      processingLog.push('Criteria generation complete');
 
-      // Analyze document
-      const analysis = await this.analyzeDocument(extractedText, options);
-      processingLog.push(
-        `Analysis complete: ${analysis.categories.length} categories identified`
-      );
+      // Step 3: Propose weights (category-level)
+      processingLog.push('Step 3: Proposing weights');
+      const weightedCategories = this.applyWeights(discovered, criteriaMap);
 
       // Build structure
-      const templateStructure = this.buildTemplateStructure(analysis, options);
+      const templateStructure = { categories: weightedCategories };
 
-      // Enhance if requested
+      // Optional enhancement step
       let enhancedCategories = templateStructure.categories;
       if (options.generateRubrics) {
-        enhancedCategories = await this.enhanceCriteria(templateStructure.categories, analysis);
+        enhancedCategories = await this.enhanceCriteria(templateStructure.categories, {
+          categories: discovered.map((d) => ({
+            name: d.name,
+            description: d.description,
+            weight: d.weight ?? 1 / discovered.length,
+            regulatoryReferences: d.regulatoryReferences || [],
+            criteria: criteriaMap[d.name] || [],
+          })),
+          emergencyProcedures: [],
+          regulatoryFramework: [],
+          completeness: 1,
+          confidence: 0.9,
+        });
         processingLog.push('Criteria enhanced with scoring rubrics');
       }
 
       // Validate and fix
       const validation = templateService.validateTemplateStructure(enhancedCategories);
       if (!validation.valid) {
-        enhancedCategories = this.autoFixTemplate(enhancedCategories);
-
-        // Re-validate after auto-fix
-        const revalidation = templateService.validateTemplateStructure(enhancedCategories);
-
+        const fixed = this.autoFixTemplate(enhancedCategories);
+        const revalidation = templateService.validateTemplateStructure(fixed);
         if (!revalidation.valid) {
           throw Errors.processingFailed(
             'Template auto-fix',
             `Auto-fix failed to resolve validation issues: ${revalidation.errors.join(', ')}`
           );
         }
-
         processingLog.push('Template auto-corrected and revalidated successfully');
+        // eslint-disable-next-line no-param-reassign
+        enhancedCategories = fixed;
       } else {
         processingLog.push('Template validation passed');
       }
 
-      // Generate suggestions
-      const suggestions = this.generateSuggestions(enhancedCategories, analysis);
+      // Suggestions & confidence
+      const suggestions = this.generateSuggestions(enhancedCategories, {
+        categories: enhancedCategories.map((c) => ({
+          name: c.name,
+          description: c.description,
+          weight: c.weight,
+          regulatoryReferences: c.regulatoryReferences || [],
+          criteria: c.criteria,
+        })),
+        emergencyProcedures: [],
+        regulatoryFramework: [],
+        completeness: 1,
+        confidence: 0.9,
+      });
 
-      // Calculate confidence
-      const confidence = this.calculateConfidence(analysis, validation);
-
+      const confidence = 0.9;
       const metadata: TemplateGenerationMetadata = {
         generatedAt: new Date().toISOString(),
         aiModel: 'gpt-4.1',
         confidence,
-        sourceAnalysis: analysis,
+        sourceAnalysis: undefined as any,
         customInstructions: options.additionalInstructions,
       };
 
@@ -381,13 +403,15 @@ Return this exact JSON structure:
 
     try {
       const response = await withRateLimit(async () => {
+        // Cast to any to allow response_format until SDK types catch up
         return await client.responses.create({
           model: 'gpt-4.1',
           instructions: systemPrompt,
           input: userPrompt,
           temperature: 0.1, // Low for consistency
-          max_output_tokens: 4000,
-        });
+          max_output_tokens: 8000,
+          response_format: { type: 'json_object' },
+        } as any);
       });
 
       // Track token usage
@@ -481,6 +505,193 @@ Return this exact JSON structure:
         error instanceof Error ? error.message : undefined
       );
     }
+  }
+
+  /**
+   * Multi-turn step: discover categories with full policy context
+   */
+  private async discoverCategoriesFullContext(
+    fullText: string,
+    options: TemplateGenerationOptions
+  ): Promise<
+    Array<{
+      name: string;
+      description: string;
+      weight?: number;
+      regulatoryReferences?: string[];
+    }>
+  > {
+    const client = getOpenAIClient();
+
+    const system = `You are an expert fire department policy analyst. Return ONLY JSON.`;
+    const user = `From the following policy documents, identify up to 15 primary compliance categories (soft cap; include more only if clearly justified by the documents). For each, include a concise description, an initial weight suggestion (0-1, rough), and any regulatory references mentioned.
+
+DOCUMENTS:
+${fullText}`;
+
+    const response = await withRateLimit(async () => {
+      return await client.responses.create({
+        model: 'gpt-4.1',
+        instructions: system,
+        input: user,
+        temperature: 0.1,
+        max_output_tokens: 4000,
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'category_discovery',
+            schema: {
+              type: 'object',
+              properties: {
+                categories: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    required: ['name', 'description'],
+                    properties: {
+                      name: { type: 'string' },
+                      description: { type: 'string' },
+                      weight: { type: 'number' },
+                      regulatoryReferences: {
+                        type: 'array',
+                        items: { type: 'string' },
+                      },
+                    },
+                  },
+                },
+              },
+              required: ['categories'],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        },
+      } as any);
+    });
+
+    const content = response.output_text;
+    const json = JSON.parse(content);
+    return (json.categories || []) as Array<{
+      name: string;
+      description: string;
+      weight?: number;
+      regulatoryReferences?: string[];
+    }>;
+  }
+
+  /**
+   * Multi-turn step: generate criteria for a specific category using full context
+   */
+  private async generateCriteriaForCategoryFullContext(
+    fullText: string,
+    categoryName: string,
+    options: TemplateGenerationOptions
+  ): Promise<ComplianceCriterion[]> {
+    const client = getOpenAIClient();
+    const system = `You are an expert fire department policy analyst. Return ONLY JSON.`;
+    const user = `From the policy documents below, extract up to 10 specific, measurable compliance criteria for the category: "${categoryName}". Each criterion must include description, what evidence to look for in transcripts, a scoring method (PASS_FAIL, NUMERIC, or CRITICAL_PASS_FAIL), and a relative weight suggestion. If possible, include a brief source reference (section/page).
+
+DOCUMENTS:
+${fullText}`;
+
+    const response = await withRateLimit(async () => {
+      return await client.responses.create({
+        model: 'gpt-4.1',
+        instructions: system,
+        input: user,
+        temperature: 0.1,
+        max_output_tokens: 4000,
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'criteria_generation',
+            schema: {
+              type: 'object',
+              properties: {
+                category: { type: 'string' },
+                criteria: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    required: [
+                      'description',
+                      'evidenceRequired',
+                      'scoringMethod',
+                      'weight',
+                    ],
+                    properties: {
+                      description: { type: 'string' },
+                      evidenceRequired: { type: 'string' },
+                      scoringMethod: {
+                        type: 'string',
+                        enum: ['PASS_FAIL', 'NUMERIC', 'CRITICAL_PASS_FAIL'],
+                      },
+                      weight: { type: 'number' },
+                      sourceReference: { type: 'string' },
+                    },
+                    additionalProperties: false,
+                  },
+                },
+              },
+              required: ['criteria'],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        },
+      } as any);
+    });
+
+    const content = response.output_text;
+    const json = JSON.parse(content);
+    const items = (json.criteria || []) as Array<{
+      description: string;
+      evidenceRequired: string;
+      scoringMethod: string;
+      weight: number;
+      sourceReference?: string;
+    }>;
+
+    // Map to ComplianceCriterion with generated id placeholders (slugify based on index)
+    return items.map((it, idx) => ({
+      id: `${categoryName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-crit-${idx + 1}`,
+      description: it.description,
+      evidenceRequired: it.evidenceRequired,
+      scoringMethod: it.scoringMethod as any,
+      weight: it.weight,
+    }));
+  }
+
+  /**
+   * Apply and normalize weights across categories and criteria
+   */
+  private applyWeights(
+    discovered: Array<{
+      name: string;
+      description: string;
+      weight?: number;
+      regulatoryReferences?: string[];
+    }>,
+    criteriaMap: Record<string, ComplianceCriterion[]>
+  ): ComplianceCategory[] {
+    // Category weights
+    const rawWeights = discovered.map((c) => c.weight ?? 1 / discovered.length);
+    const sumCat = rawWeights.reduce((a, b) => a + b, 0) || 1;
+
+    return discovered.map((c, i) => {
+      const crit = criteriaMap[c.name] || [];
+      // Normalize criteria weights
+      const sumCrit = crit.reduce((s, it) => s + (it.weight || 0), 0) || 1;
+      const normCrit = crit.map((it) => ({ ...it, weight: (it.weight || 0) / sumCrit }));
+
+      return {
+        name: c.name,
+        description: c.description,
+        weight: rawWeights[i] / sumCat,
+        regulatoryReferences: c.regulatoryReferences || [],
+        criteria: normCrit,
+      } as ComplianceCategory;
+    });
   }
 
   /**
