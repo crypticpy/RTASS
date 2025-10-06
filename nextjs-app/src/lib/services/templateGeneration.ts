@@ -2,6 +2,13 @@
  * Template Generation Service
  * Fire Department Radio Transcription System
  *
+ * ⚠️ CRITICAL: This module MUST use the following:
+ * - Model: gpt-4.1 (DO NOT change to gpt-4o, gpt-4-turbo, or any other model)
+ * - API: client.responses.create() Responses API (DO NOT use chat.completions.create())
+ *
+ * These are project requirements. Do not substitute or change these values.
+ * Any changes will cause production failures.
+ *
  * AI-powered template generation from policy documents using GPT-4.1.
  * Analyzes policy content, extracts compliance categories and criteria,
  * and generates structured audit templates with NFPA mapping.
@@ -156,7 +163,7 @@ export class TemplateGenerationService {
       // Build metadata
       const metadata: TemplateGenerationMetadata = {
         generatedAt: new Date().toISOString(),
-        aiModel: 'gpt-4.1',
+        aiModel: 'gpt-4.1',  // ⚠️ DO NOT change this model
         confidence,
         sourceAnalysis: analysis,
         customInstructions: options.additionalInstructions,
@@ -283,7 +290,7 @@ export class TemplateGenerationService {
       const confidence = 0.9;
       const metadata: TemplateGenerationMetadata = {
         generatedAt: new Date().toISOString(),
-        aiModel: 'gpt-4.1',
+        aiModel: 'gpt-4.1',  // ⚠️ DO NOT change this model
         confidence,
         sourceAnalysis: undefined as any,
         customInstructions: options.additionalInstructions,
@@ -386,9 +393,10 @@ Return this exact JSON structure:
 }`;
 
     try {
+      // ⚠️ CRITICAL: Must use responses.create() API, NOT chat.completions.create()
       const response = await withRateLimit(async () => {
         return await client.responses.create({
-          model: 'gpt-4.1',
+          model: 'gpt-4.1',  // ⚠️ DO NOT change this model
           input: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt },
@@ -409,7 +417,7 @@ Return this exact JSON structure:
       // Track token usage
       if (response.usage) {
         await trackTokenUsage(
-          'gpt-4.1',
+          'gpt-4.1',  // ⚠️ DO NOT change this model
           {
             promptTokens: response.usage.input_tokens,
             completionTokens: response.usage.output_tokens,
@@ -492,9 +500,10 @@ Return this exact JSON structure:
 DOCUMENTS:
 ${fullText}`;
 
+    // ⚠️ CRITICAL: Must use responses.create() API, NOT chat.completions.create()
     const response = await withRateLimit(async () => {
       return await client.responses.create({
-        model: 'gpt-4.1',
+        model: 'gpt-4.1',  // ⚠️ DO NOT change this model
         input: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -534,9 +543,10 @@ ${fullText}`;
 DOCUMENTS:
 ${fullText}`;
 
+    // ⚠️ CRITICAL: Must use responses.create() API, NOT chat.completions.create()
     const response = await withRateLimit(async () => {
       return await client.responses.create({
-        model: 'gpt-4.1',
+        model: 'gpt-4.1',  // ⚠️ DO NOT change this model
         input: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -645,7 +655,7 @@ ${fullText}`;
   /**
    * Enhance criteria with detailed scoring guidance
    *
-   * Uses GPT-4o to generate detailed rubrics for each criterion.
+   * Uses GPT-4.1 to generate detailed rubrics for each criterion.
    *
    * @private
    * @param {ComplianceCategory[]} categories - Categories to enhance
@@ -665,7 +675,7 @@ ${fullText}`;
       // Enhance each criterion
       for (const criterion of category.criteria) {
         // For now, skip enhancement to save tokens
-        // In production, this would call GPT-4o for each criterion
+        // In production, this would call GPT-4.1 for each criterion
         enhancedCriteria.push(criterion);
       }
 

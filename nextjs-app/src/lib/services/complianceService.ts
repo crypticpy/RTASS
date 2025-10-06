@@ -2,7 +2,7 @@
  * Compliance Service
  * Fire Department Radio Transcription System
  *
- * GPT-4o-powered compliance scoring engine that:
+ * GPT-4.1-powered compliance scoring engine that:
  * - Evaluates transcripts against compliance templates
  * - Extracts findings with citations
  * - Generates weighted scores
@@ -23,12 +23,39 @@ import type {
   Recommendation,
   AuditMetadata,
 } from '@/lib/types';
+import {
+  analyzeCategory,
+  generateNarrative as generateAuditNarrative,
+  calculateOverallScore as calculateWeightedScore,
+  extractCriticalFindings,
+  type CategoryAnalysisResult,
+  type IncidentContext,
+  type AuditResults,
+} from '@/lib/openai/compliance-analysis';
 
 // Prisma JSON type helper
 type PrismaJson = Record<string, unknown> | unknown[];
 
 /**
- * GPT-4o response structure
+ * Progress callback for modular audit execution
+ */
+export type AuditProgressCallback = (
+  current: number,
+  total: number,
+  categoryName: string
+) => void;
+
+/**
+ * Options for modular audit execution
+ */
+export interface ModularAuditOptions {
+  onProgress?: AuditProgressCallback;
+  savePartialResults?: boolean;
+  additionalNotes?: string;
+}
+
+/**
+ * GPT-4.1 response structure
  */
 interface GPT4Response {
   categories: Array<{
@@ -47,7 +74,7 @@ interface GPT4Response {
 /**
  * Compliance Service
  *
- * Provides AI-powered compliance auditing using GPT-4o.
+ * Provides AI-powered compliance auditing using GPT-4.1.
  *
  * @example
  * ```typescript
@@ -70,8 +97,8 @@ export class ComplianceService {
    *
    * Performs the following steps:
    * 1. Fetch transcript and template from database
-   * 2. Build scoring prompt for GPT-4o
-   * 3. Call GPT-4o API for evaluation
+   * 2. Build scoring prompt for GPT-4.1
+   * 3. Call GPT-4.1 API for evaluation
    * 4. Parse and validate response
    * 5. Calculate scores with weighting
    * 6. Generate recommendations
@@ -118,7 +145,7 @@ export class ComplianceService {
         additionalNotes
       );
 
-      // Step 3: Call GPT-4o API
+      // Step 3: Call GPT-4.1 API
       const gptResponse = await this.callGPT4o(prompt);
 
       // Step 4: Parse response
@@ -146,7 +173,7 @@ export class ComplianceService {
       // Step 8: Prepare metadata
       const processingTime = (Date.now() - startTime) / 1000;
       const metadata: AuditMetadata = {
-        model: 'gpt-4o',
+        model: 'gpt-4.1',  // ⚠️ DO NOT change this model
         processingTime,
         tokenUsage: gptResponse.usage,
         additionalNotes,
@@ -311,11 +338,11 @@ Provide ONLY the JSON output, no additional text.`;
   }
 
   /**
-   * Call GPT-4o API for compliance scoring
+   * Call GPT-4.1 API for compliance scoring
    *
    * @private
    * @param {string} prompt - Scoring prompt
-   * @returns {Promise} GPT-4o response
+   * @returns {Promise} GPT-4.1 response
    * @throws {ServiceError} If API call fails
    */
   private async callGPT4o(prompt: string): Promise<any> {
@@ -324,7 +351,7 @@ Provide ONLY the JSON output, no additional text.`;
 
       const response = await withRateLimit(async () => {
         return await client.chat.completions.create({
-          model: 'gpt-4o',
+          model: 'gpt-4.1',  // ⚠️ DO NOT change this model
           temperature: 0.1, // Low for consistency
           max_tokens: 4000,
           response_format: { type: 'json_object' },
@@ -345,7 +372,7 @@ Provide ONLY the JSON output, no additional text.`;
       // Track token usage
       if (response.usage) {
         await trackTokenUsage(
-          'gpt-4o',
+          'gpt-4.1',  // ⚠️ DO NOT change this model
           {
             promptTokens: response.usage.prompt_tokens,
             completionTokens: response.usage.completion_tokens,
@@ -361,17 +388,17 @@ Provide ONLY the JSON output, no additional text.`;
       };
     } catch (error) {
       if (error instanceof Error) {
-        throw Errors.externalServiceError('OpenAI GPT-4o API', error.message);
+        throw Errors.externalServiceError('OpenAI GPT-4.1 API', error.message);
       }
-      throw Errors.processingFailed('GPT-4o API call', 'Unknown error');
+      throw Errors.processingFailed('GPT-4.1 API call', 'Unknown error');
     }
   }
 
   /**
-   * Parse and validate GPT-4o response
+   * Parse and validate GPT-4.1 response
    *
    * @private
-   * @param {object} gptResponse - Raw GPT-4o response
+   * @param {object} gptResponse - Raw GPT-4.1 response
    * @param {ComplianceCategory[]} templateCategories - Original template categories
    * @returns {object} Parsed categories with criteria
    */
@@ -383,19 +410,19 @@ Provide ONLY the JSON output, no additional text.`;
 
     if (!content.categories || !Array.isArray(content.categories)) {
       throw Errors.processingFailed(
-        'GPT-4o response parsing',
+        'GPT-4.1 response parsing',
         'Invalid response format'
       );
     }
 
-    // Merge GPT-4o results with template structure
+    // Merge GPT-4.1 results with template structure
     const categories = templateCategories.map((templateCategory) => {
       const gptCategory = content.categories.find(
         (c: any) => c.name === templateCategory.name
       );
 
       if (!gptCategory) {
-        // If GPT-4o didn't provide this category, mark all as NOT_APPLICABLE
+        // If GPT-4.1 didn't provide this category, mark all as NOT_APPLICABLE
         return {
           ...templateCategory,
           criteria: templateCategory.criteria.map((criterion) => ({
@@ -796,6 +823,573 @@ ${
         error instanceof Error ? error.message : 'Unknown error'
       );
     }
+  }
+
+  /**
+   * Execute modular compliance audit (category-by-category)
+   *
+   * This method implements a sequential, category-by-category scoring approach
+   * that provides better error handling, progress tracking, and partial results
+   * compared to the monolithic auditTranscript() method.
+   *
+   * **Key Features**:
+   * - Sequential processing: One category at a time
+   * - Progress callbacks: Real-time status updates
+   * - Graceful error handling: Category failures don't abort the audit
+   * - Partial result saving: Resume interrupted audits
+   * - Per-category token tracking: Better cost visibility
+   *
+   * **Workflow**:
+   * 1. Load transcript and template from database
+   * 2. Extract incident context
+   * 3. Loop through each category:
+   *    - Call analyzeCategory() from OpenAI service
+   *    - Invoke progress callback (if provided)
+   *    - Save partial result to database (if enabled)
+   *    - Handle errors gracefully (continue with remaining categories)
+   * 4. Generate final narrative summary
+   * 5. Calculate overall weighted score
+   * 6. Save complete audit to database
+   * 7. Return full audit results
+   *
+   * @param {string} transcriptId - Transcript ID to audit
+   * @param {string} templateId - Compliance template ID
+   * @param {ModularAuditOptions} options - Execution options
+   * @returns {Promise<AuditResult>} Complete audit result with all categories
+   * @throws {ServiceError} If critical failure occurs (transcript/template not found)
+   *
+   * @example
+   * ```typescript
+   * // Basic usage
+   * const audit = await complianceService.executeModularAudit(
+   *   'transcript-123',
+   *   'template-456'
+   * );
+   *
+   * // With progress tracking
+   * const audit = await complianceService.executeModularAudit(
+   *   'transcript-123',
+   *   'template-456',
+   *   {
+   *     onProgress: (current, total, categoryName) => {
+   *       console.log(`Processing ${categoryName} (${current}/${total})`);
+   *     },
+   *     savePartialResults: true
+   *   }
+   * );
+   * ```
+   */
+  async executeModularAudit(
+    transcriptId: string,
+    templateId: string,
+    options?: ModularAuditOptions
+  ): Promise<AuditResult> {
+    const startTime = Date.now();
+
+    try {
+      // Step 1: Fetch transcript and template
+      const transcript = await prisma.transcript.findUnique({
+        where: { id: transcriptId },
+        include: {
+          incident: {
+            include: {
+              units: true,
+            },
+          },
+        },
+      });
+
+      if (!transcript) {
+        throw Errors.notFound('Transcript', transcriptId);
+      }
+
+      const template = await templateService.getTemplateById(templateId);
+      const categories = template.categories as any as ComplianceCategory[];
+
+      // Step 2: Extract incident context
+      const incidentContext: IncidentContext = {
+        type: transcript.incident?.type || undefined,
+        date: transcript.incident?.startTime || undefined,
+        units: transcript.incident?.units?.map((u) => u.number) || [],
+        notes: options?.additionalNotes,
+      };
+
+      // Step 3: Initialize tracking variables
+      const categoryResults: CategoryAnalysisResult[] = [];
+      const failedCategories: string[] = [];
+      const categoryTokenUsage: Record<string, number> = {};
+      let totalTokens = 0;
+
+      // Step 4: Build category weights map for scoring
+      const categoryWeights = new Map<string, number>();
+      categories.forEach((cat) => {
+        categoryWeights.set(cat.name, cat.weight);
+      });
+
+      // Step 5: Loop through each category sequentially
+      for (let i = 0; i < categories.length; i++) {
+        const category = categories[i];
+
+        try {
+          // Transform ComplianceCategory to TemplateCategory format
+          const templateCategory = {
+            id: category.name.toLowerCase().replace(/\s+/g, '-'),
+            name: category.name,
+            description: category.description || '',
+            weight: category.weight,
+            criteria: category.criteria.map((c) => ({
+              id: c.id,
+              description: c.description,
+              scoringGuidance: c.evidenceRequired,
+              examplePass: undefined,
+              exampleFail: undefined,
+            })),
+            analysisPrompt: `Analyze compliance for: ${category.name}`,
+          };
+
+          // Call modular scoring function (analyzeCategory from OpenAI service)
+          const result = await analyzeCategory(
+            transcript.text,
+            incidentContext,
+            templateCategory,
+            {
+              model: 'gpt-4.1',  // ⚠️ DO NOT change this model
+              temperature: 0.3, // Low temperature for consistency
+            }
+          );
+
+          categoryResults.push(result);
+
+          // Track token usage (estimated)
+          const estimatedTokens = Math.round(
+            (transcript.text.length + JSON.stringify(category).length) / 4
+          );
+          categoryTokenUsage[category.name] = estimatedTokens;
+          totalTokens += estimatedTokens;
+
+          // Invoke progress callback
+          if (options?.onProgress) {
+            options.onProgress(i + 1, categories.length, category.name);
+          }
+
+          // Save partial results (if enabled)
+          if (options?.savePartialResults) {
+            await this.savePartialCategoryScore(
+              transcriptId,
+              templateId,
+              result
+            );
+          }
+        } catch (error) {
+          // Handle category failure gracefully
+          console.error(`Category "${category.name}" failed:`, error);
+          failedCategories.push(category.name);
+
+          // Add placeholder result with error
+          categoryResults.push({
+            category: category.name,
+            categoryScore: 0,
+            criteriaScores: [],
+            overallAnalysis: `Error: ${
+              error instanceof Error ? error.message : 'Unknown error'
+            }`,
+            keyFindings: [],
+            recommendations: [
+              'This category could not be scored due to an error. Please retry the audit.',
+            ],
+          });
+
+          // Continue with next category (don't abort audit)
+        }
+      }
+
+      // Step 6: Validate completeness
+      const completeness = this.validateAuditCompleteness(
+        categoryResults,
+        categories
+      );
+
+      // Step 7: Calculate overall score
+      const overallScore = calculateWeightedScore(
+        categoryResults,
+        categoryWeights
+      );
+      const overallScoreNormalized = Math.round(overallScore * 100); // Convert to 0-100
+      const overallStatus = this.determineOverallStatus(overallScoreNormalized);
+
+      // Step 8: Transform category results to database format
+      const transformedCategories = this.transformCategoryResults(
+        categoryResults,
+        categories
+      );
+
+      // Step 9: Extract all findings
+      const allFindings = this.extractAllFindingsFromResults(categoryResults);
+
+      // Step 10: Generate recommendations
+      const recommendations =
+        this.generateRecommendationsFromResults(categoryResults);
+
+      // Step 11: Generate final narrative
+      const auditResults: AuditResults = {
+        overallScore,
+        categories: categoryResults,
+        criticalFindings: extractCriticalFindings({ overallScore, categories: categoryResults }),
+      };
+      const narrative = await generateAuditNarrative(auditResults);
+
+      // Step 12: Prepare metadata
+      const processingTime = (Date.now() - startTime) / 1000;
+      const metadata: AuditMetadata = {
+        model: 'gpt-4.1',  // ⚠️ DO NOT change this model
+        processingTime,
+        tokenUsage: {
+          prompt: Math.round(totalTokens * 0.6),
+          completion: Math.round(totalTokens * 0.4),
+          total: totalTokens,
+        },
+        additionalNotes: options?.additionalNotes,
+        mode: 'modular' as any,
+        failedCategories: failedCategories.length > 0 ? failedCategories : undefined,
+        categoryTokenUsage: categoryTokenUsage as any,
+        partialResultsSaved: options?.savePartialResults,
+      } as any;
+
+      // Step 13: Save audit to database
+      const audit = await this.saveAudit({
+        incidentId: transcript.incidentId,
+        transcriptId: transcript.id,
+        templateId: template.id,
+        overallScore: overallScoreNormalized,
+        overallStatus,
+        summary: narrative,
+        categories: transformedCategories,
+        findings: allFindings,
+        recommendations,
+        metadata,
+      });
+
+      // Step 14: Return formatted result
+      return {
+        id: audit.id,
+        incidentId: audit.incidentId,
+        transcriptId: audit.transcriptId || undefined,
+        templateId: audit.templateId,
+        overallStatus: audit.overallStatus as AuditStatus,
+        overallScore: audit.overallScore || 0,
+        summary: audit.summary,
+        categories: transformedCategories,
+        findings: allFindings,
+        recommendations,
+        metadata,
+        createdAt: audit.createdAt,
+      };
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('not found')) {
+        throw error;
+      }
+      throw Errors.processingFailed(
+        'Modular compliance audit',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
+    }
+  }
+
+  /**
+   * Convert CategoryAnalysisResult to Prisma-safe JSON format
+   *
+   * Ensures dates and complex types are properly serialized for database storage.
+   * This avoids the unsafe JSON.parse(JSON.stringify()) anti-pattern.
+   *
+   * @private
+   * @param {CategoryAnalysisResult} result - Category result to convert
+   * @returns {Prisma.JsonValue} Prisma-compatible JSON value
+   */
+  private categoryResultToPrismaJson(result: CategoryAnalysisResult): Record<string, unknown> {
+    return {
+      category: result.category,
+      categoryScore: result.categoryScore,
+      criteriaScores: result.criteriaScores.map(score => ({
+        criterionId: score.criterionId,
+        score: score.score,
+        confidence: score.confidence,
+        evidence: score.evidence.map(ev => ({
+          timestamp: ev.timestamp,
+          text: ev.text,
+          type: ev.type,
+        })),
+        reasoning: score.reasoning,
+        impact: score.impact,
+        recommendation: score.recommendation ?? null,
+      })),
+      overallAnalysis: result.overallAnalysis,
+      keyFindings: result.keyFindings,
+      recommendations: result.recommendations,
+    };
+  }
+
+  /**
+   * Transform modular category results to ComplianceCategory format
+   *
+   * Converts CategoryAnalysisResult objects from the OpenAI service
+   * to ComplianceCategory objects for database storage.
+   *
+   * @private
+   * @param {CategoryAnalysisResult[]} categoryResults - Results from analyzeCategory()
+   * @param {ComplianceCategory[]} templateCategories - Original template categories
+   * @returns {ComplianceCategory[]} Transformed categories with scores and findings
+   * @throws {Error} If category or criterion not found in template
+   */
+  private transformCategoryResults(
+    categoryResults: CategoryAnalysisResult[],
+    templateCategories: ComplianceCategory[]
+  ): ComplianceCategory[] {
+    return categoryResults.map((result) => {
+      // Find matching template category
+      const templateCategory = templateCategories.find(
+        (tc) => tc.name === result.category
+      );
+
+      if (!templateCategory) {
+        throw new Error(
+          `Template category not found: ${result.category}`
+        );
+      }
+
+      // Transform criteria scores to criteria
+      const criteria: ComplianceCriterion[] = result.criteriaScores.map(
+        (score) => {
+          const templateCriterion = templateCategory.criteria.find(
+            (c) => c.id === score.criterionId
+          );
+
+          if (!templateCriterion) {
+            throw new Error(`Criterion not found: ${score.criterionId}`);
+          }
+
+          // Convert evidence to findings
+          const findings: Finding[] = score.evidence.map((ev) => ({
+            timestamp: ev.timestamp,
+            quote: ev.text,
+            compliance:
+              ev.type === 'VIOLATION'
+                ? 'NEGATIVE'
+                : ev.type === 'COMPLIANCE'
+                  ? 'POSITIVE'
+                  : 'NEUTRAL',
+            significance:
+              score.impact === 'CRITICAL' ? 'HIGH' : score.impact || 'MEDIUM',
+            explanation: score.reasoning,
+            criterionId: score.criterionId,
+          }));
+
+          return {
+            ...templateCriterion,
+            status: score.score as CriterionStatus,
+            score: this.convertScoreToNumeric(score.score),
+            rationale: score.reasoning,
+            findings,
+            recommendations: score.recommendation
+              ? [score.recommendation]
+              : [],
+          };
+        }
+      );
+
+      // Calculate category score (0-100)
+      const categoryScore = Math.round(result.categoryScore * 100);
+
+      return {
+        ...templateCategory,
+        criteria,
+        score: categoryScore,
+        status: this.determineOverallStatus(categoryScore),
+        rationale: result.overallAnalysis,
+      };
+    });
+  }
+
+  /**
+   * Convert score string to numeric value
+   *
+   * @private
+   * @param {string} score - Score value (PASS, FAIL, NOT_APPLICABLE)
+   * @returns {number} Numeric score (0-100)
+   */
+  private convertScoreToNumeric(
+    score: 'PASS' | 'FAIL' | 'NOT_APPLICABLE'
+  ): number {
+    switch (score) {
+      case 'PASS':
+        return 100;
+      case 'FAIL':
+        return 0;
+      case 'NOT_APPLICABLE':
+        return 0;
+      default:
+        return 0;
+    }
+  }
+
+  /**
+   * Extract all findings from category results
+   *
+   * @private
+   * @param {CategoryAnalysisResult[]} categoryResults - Results from analyzeCategory()
+   * @returns {Finding[]} Flattened array of all findings across categories
+   */
+  private extractAllFindingsFromResults(
+    categoryResults: CategoryAnalysisResult[]
+  ): Finding[] {
+    const findings: Finding[] = [];
+
+    categoryResults.forEach((categoryResult) => {
+      categoryResult.criteriaScores.forEach((score) => {
+        score.evidence.forEach((ev) => {
+          findings.push({
+            timestamp: ev.timestamp,
+            quote: ev.text,
+            compliance:
+              ev.type === 'VIOLATION'
+                ? 'NEGATIVE'
+                : ev.type === 'COMPLIANCE'
+                  ? 'POSITIVE'
+                  : 'NEUTRAL',
+            significance:
+              score.impact === 'CRITICAL' ? 'HIGH' : score.impact || 'MEDIUM',
+            explanation: score.reasoning,
+            criterionId: score.criterionId,
+          });
+        });
+      });
+    });
+
+    return findings;
+  }
+
+  /**
+   * Generate recommendations from category results
+   *
+   * @private
+   * @param {CategoryAnalysisResult[]} categoryResults - Results from analyzeCategory()
+   * @returns {Recommendation[]} Prioritized recommendations for improvement
+   */
+  private generateRecommendationsFromResults(
+    categoryResults: CategoryAnalysisResult[]
+  ): Recommendation[] {
+    const recommendations: Recommendation[] = [];
+
+    categoryResults.forEach((categoryResult) => {
+      // Extract category-level recommendations
+      if (
+        categoryResult.recommendations &&
+        categoryResult.recommendations.length > 0
+      ) {
+        recommendations.push({
+          priority: categoryResult.categoryScore < 0.6 ? 'HIGH' : 'MEDIUM',
+          category: categoryResult.category,
+          description: `Improve performance in ${categoryResult.category}`,
+          actionItems: categoryResult.recommendations,
+        });
+      }
+
+      // Extract criterion-level recommendations
+      categoryResult.criteriaScores.forEach((score) => {
+        if (score.score === 'FAIL' && score.recommendation) {
+          recommendations.push({
+            priority:
+              score.impact === 'CRITICAL' || score.impact === 'HIGH'
+                ? 'HIGH'
+                : 'MEDIUM',
+            category: categoryResult.category,
+            description: score.recommendation,
+            actionItems: [score.reasoning],
+          });
+        }
+      });
+    });
+
+    // Sort by priority (HIGH first)
+    return recommendations.sort((a, b) => {
+      const priorityOrder = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+      return priorityOrder[a.priority] - priorityOrder[b.priority];
+    });
+  }
+
+  /**
+   * Save partial category score to database
+   *
+   * Stores intermediate category results to enable audit resumption
+   * if the process is interrupted.
+   *
+   * @private
+   * @param {string} transcriptId - Transcript ID
+   * @param {string} templateId - Template ID
+   * @param {CategoryAnalysisResult} categoryResult - Category result to save
+   */
+  private async savePartialCategoryScore(
+    transcriptId: string,
+    templateId: string,
+    categoryResult: CategoryAnalysisResult
+  ): Promise<void> {
+    try {
+      // Store partial result in SystemMetrics for now
+      // (Could be moved to dedicated PartialAudit table in future)
+      await prisma.systemMetrics.create({
+        data: {
+          metricName: 'partial_audit_category',
+          metricValue: categoryResult.categoryScore,
+          metadata: {
+            transcriptId,
+            templateId,
+            categoryName: categoryResult.category,
+            result: this.categoryResultToPrismaJson(categoryResult),
+          } as any,
+        },
+      });
+    } catch (error) {
+      // Log error but don't throw (partial save is optional)
+      console.error('Failed to save partial category score:', error);
+    }
+  }
+
+  /**
+   * Validate audit completeness
+   *
+   * Checks that all expected categories were scored and identifies
+   * any missing or failed categories.
+   *
+   * @private
+   * @param {CategoryAnalysisResult[]} categoryResults - Scored categories
+   * @param {ComplianceCategory[]} templateCategories - Expected categories
+   * @returns {object} Completeness report
+   */
+  private validateAuditCompleteness(
+    categoryResults: CategoryAnalysisResult[],
+    templateCategories: ComplianceCategory[]
+  ): {
+    isComplete: boolean;
+    missingCategories: string[];
+    failedCategories: string[];
+  } {
+    const scoredCategoryNames = new Set(
+      categoryResults.map((r) => r.category)
+    );
+    const expectedCategoryNames = templateCategories.map((c) => c.name);
+
+    const missingCategories = expectedCategoryNames.filter(
+      (name) => !scoredCategoryNames.has(name)
+    );
+
+    const failedCategories = categoryResults
+      .filter((r) => r.categoryScore === 0 && r.criteriaScores.length === 0)
+      .map((r) => r.category);
+
+    return {
+      isComplete: missingCategories.length === 0 && failedCategories.length === 0,
+      missingCategories,
+      failedCategories,
+    };
   }
 }
 

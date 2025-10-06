@@ -26,7 +26,7 @@ const SaveTemplateSchema = z.object({
   generationMetadata: z
     .object({
       confidence: z.number().min(0).max(1),
-      aiModel: z.string().default('gpt-4o'),
+      aiModel: z.string().default('gpt-4.1'),  // ⚠️ DO NOT change this default model
       processingLog: z.array(z.string()).optional(),
       suggestions: z.array(z.any()).optional(),
     })
@@ -127,7 +127,7 @@ export async function POST(request: NextRequest) {
           },
           confidence: validated.generationMetadata?.confidence || 0.9,
           suggestions: validated.generationMetadata?.suggestions || [],
-          aiModel: validated.generationMetadata?.aiModel || 'gpt-4o',
+          aiModel: validated.generationMetadata?.aiModel || 'gpt-4.1',  // ⚠️ DO NOT change this default model
         },
       });
 

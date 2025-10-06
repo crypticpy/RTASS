@@ -59,7 +59,7 @@ export function getOpenAIClient(): OpenAI {
  * Saves token usage metrics to the SystemMetrics table for analysis
  * and budget tracking.
  *
- * @param {string} model - OpenAI model used (e.g., 'whisper-1', 'gpt-4.1', 'gpt-4o')
+ * @param {string} model - OpenAI model used (e.g., 'whisper-1', 'gpt-4.1', 'gpt-4o-mini')
  * @param {TokenUsage} usage - Token usage information
  * @param {string} operationType - Type of operation (e.g., 'transcription', 'compliance_audit')
  *
@@ -102,8 +102,7 @@ export async function trackTokenUsage(
  *
  * Pricing as of January 2025:
  * - Whisper: $0.006 per minute
- * - GPT-4.1: $0.002 per 1K input tokens, $0.008 per 1K output tokens (20% cheaper than GPT-4o)
- * - GPT-4o: $0.0025 per 1K input tokens, $0.010 per 1K output tokens
+ * - GPT-4.1: $0.0025 per 1K input tokens, $0.010 per 1K output tokens
  * - GPT-4o-mini: $0.00015 per 1K input tokens, $0.0006 per 1K output tokens
  *
  * @param {string} model - OpenAI model name
@@ -125,8 +124,7 @@ export function calculateEstimatedCost(
   usage: TokenUsage
 ): number {
   const pricing: Record<string, { input: number; output: number }> = {
-    'gpt-4.1': { input: 0.002 / 1000, output: 0.008 / 1000 },
-    'gpt-4o': { input: 0.0025 / 1000, output: 0.010 / 1000 },
+    'gpt-4.1': { input: 0.0025 / 1000, output: 0.010 / 1000 },
     'gpt-4o-mini': { input: 0.00015 / 1000, output: 0.0006 / 1000 },
     'gpt-4-turbo': { input: 0.01 / 1000, output: 0.03 / 1000 },
   };

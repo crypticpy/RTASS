@@ -214,7 +214,7 @@ export interface AuditResult {
  * Audit processing metadata
  */
 export interface AuditMetadata {
-  model: 'gpt-4o' | 'gpt-4o-mini';
+  model: 'gpt-4.1' | 'gpt-4o-mini';
   processingTime: number;
   tokenUsage?: {
     prompt: number;
@@ -222,6 +222,12 @@ export interface AuditMetadata {
     total: number;
   };
   additionalNotes?: string;
+
+  // Modular audit metadata (added in modular compliance refactor)
+  mode?: 'legacy' | 'modular';
+  failedCategories?: string[];
+  categoryTokenUsage?: Record<string, number>; // Per-category token tracking
+  partialResultsSaved?: boolean;
 }
 
 // ============================================================================

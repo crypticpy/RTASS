@@ -6,7 +6,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Fire Department Radio Transcription & Compliance Audit System - A Next.js application for transcribing fire department radio communications and performing automated compliance audits against policy templates.
 
-**Tech Stack**: Next.js 15 (App Router), TypeScript 5, Tailwind CSS 4, Prisma (PostgreSQL), OpenAI API (Whisper + GPT-4), Shadcn/ui, Storybook 8
+**Tech Stack**: Next.js 15 (App Router), TypeScript 5, Tailwind CSS 4, Prisma (PostgreSQL), OpenAI API (Whisper + GPT-4.1), Shadcn/ui, Storybook 8
+
+## ⚠️ CRITICAL: OpenAI API Requirements
+
+This project has specific OpenAI API requirements that **MUST NOT** be changed:
+
+### Required Model
+- **Model**: `gpt-4.1`
+- **DO NOT** substitute with `gpt-4o`, `gpt-4-turbo`, `gpt-4o-mini`, or any other model
+- This is a hard requirement - changing the model will cause production failures
+
+### Required API Endpoint
+- **API**: `client.responses.create()` (Responses API)
+- **DO NOT** use `client.chat.completions.create()` (Chat Completions API)
+- The Responses API provides specific features required by this system
+
+### Protected Files (DO NOT Modify Model/API)
+- `src/lib/openai/template-generation.ts`
+- `src/lib/openai/compliance-analysis-modular.ts`
+- `src/lib/services/templateGeneration.ts`
+- `src/lib/services/complianceService.ts`
+- `src/lib/services/utils/openai.ts`
+
+### Why These Requirements Exist
+- The `gpt-4.1` model has been specifically validated for fire department compliance auditing
+- The Responses API provides the structured outputs and reliability needed for safety-critical applications
+- Changing these values will break existing audits and templates in the database
+- Historical audit data relies on consistent model behavior
+
+**If you need to modify OpenAI integration, consult the project lead first.**
 
 ## Common Commands
 
@@ -191,6 +220,36 @@ All components follow fire department emergency service design principles:
 - **WCAG 2.2 AA compliant** - Verified color contrast ratios
 
 Use Storybook to preview all components interactively. All emergency-specific components have `.stories.tsx` files with multiple variants.
+
+## ⚠️ CRITICAL: OpenAI API Requirements
+
+This project has specific OpenAI API requirements that MUST NOT be changed:
+
+### Required Model
+- **Model**: `gpt-4.1`
+- **DO NOT** substitute with `gpt-4o`, `gpt-4-turbo`, `gpt-4o-mini`, or any other model
+- This is a hard requirement - changing the model will cause production failures
+
+### Required API Endpoint
+- **API**: `client.responses.create()` (Responses API)
+- **DO NOT** use `client.chat.completions.create()` (Chat Completions API)
+- The Responses API provides specific features required by this system
+
+### Why These Requirements Exist
+- The `gpt-4.1` model has been specifically validated for fire department compliance auditing
+- The Responses API provides the structured outputs and reliability needed for safety-critical applications
+- Changing these values will break existing audits and templates in the database
+
+### Files with Model Requirements
+All OpenAI integration files include warning comments. DO NOT modify these:
+- `src/lib/openai/template-generation.ts`
+- `src/lib/openai/compliance-analysis-modular.ts`
+- `src/lib/services/templateGeneration.ts`
+- `src/lib/services/complianceService.ts`
+- `src/lib/services/utils/openai.ts`
+- `src/lib/types/index.ts`
+
+**If you need to modify OpenAI integration, consult the project lead first.**
 
 ## Important Notes
 

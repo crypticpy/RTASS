@@ -1,6 +1,13 @@
 /**
  * Template Generation Integration
  *
+ * ⚠️ CRITICAL: This module MUST use the following:
+ * - Model: gpt-4.1 (DO NOT change to gpt-4o, gpt-4-turbo, or any other model)
+ * - API: client.responses.create() Responses API (DO NOT use chat.completions.create())
+ *
+ * These are project requirements. Do not substitute or change these values.
+ * Any changes will cause production failures.
+ *
  * Uses GPT-4.1 Responses API with structured outputs to analyze policy
  * documents and generate audit templates with typed, validated responses.
  *
@@ -41,6 +48,11 @@ export type { GeneratedTemplate, TemplateCategory, TemplateCriterion };
 
 /**
  * Default GPT model for template generation
+ *
+ * ⚠️ WARNING: DO NOT CHANGE THIS VALUE
+ * This project requires gpt-4.1 specifically. Do not substitute with any other model.
+ *
+ * Changing this will cause production failures.
  */
 const DEFAULT_MODEL = 'gpt-4.1';
 
@@ -155,10 +167,11 @@ export async function generateTemplateFromPolicies(
     // Estimate tokens for logging
     const inputTokens = estimateTokens(systemPrompt + userPrompt);
 
+    // ⚠️ CRITICAL: Must use responses.create() API, NOT chat.completions.create()
     // Call GPT-4.1 with structured outputs using retry logic
     const completion = await retryWithBackoff(async () => {
       return await openai.chat.completions.create({
-        model,
+        model,  // ⚠️ DO NOT change this model
         messages: [
           {
             role: 'system',
