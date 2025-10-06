@@ -5,12 +5,26 @@
  * AI-powered template generation from policy documents using GPT-4.1.
  * Analyzes policy content, extracts compliance categories and criteria,
  * and generates structured audit templates with NFPA mapping.
+ *
+ * REFACTORED: Now uses Zod schemas for type-safe AI responses with structured outputs.
  */
 
 import { getOpenAIClient, withRateLimit, trackTokenUsage } from './utils/openai';
 import { policyExtractionService } from './policyExtraction';
 import { templateService } from './templateService';
 import { Errors } from './utils/errorHandlers';
+import {
+  DocumentAnalysisSchema,
+  CategoryDiscoverySchema,
+  CriteriaGenerationSchema,
+  DOCUMENT_ANALYSIS_JSON_SCHEMA,
+  CATEGORY_DISCOVERY_JSON_SCHEMA,
+  CRITERIA_GENERATION_JSON_SCHEMA,
+  type DocumentAnalysis as ZodDocumentAnalysis,
+  type CategoryDiscovery,
+  type CriteriaGeneration,
+} from '@/lib/openai/schemas/template-generation';
+import { validateWithSchema } from '@/lib/openai/schemas/utils';
 import type {
   DocumentAnalysis,
   GeneratedTemplate,
@@ -23,39 +37,9 @@ import type {
 } from '@/lib/types';
 
 /**
- * GPT-4.1 document analysis response
+ * Constants
  */
-interface GPT4DocumentAnalysis {
-  categories: Array<{
-    name: string;
-    description: string;
-    weight: number;
-    regulatoryReferences: string[];
-    criteria: Array<{
-      id: string;
-      description: string;
-      evidenceRequired: string;
-      scoringMethod: string;
-      weight: number;
-      sourceReference: string;
-    }>;
-  }>;
-  emergencyProcedures: string[];
-  regulatoryFramework: string[];
-  completeness: number;
-  confidence: number;
-}
-
-/**
- * Criteria enhancement response from GPT-4.1
- */
-interface CriteriaEnhancement {
-  scoringGuidance: string;
-  complianceExamples: string[];
-  nonComplianceExamples: string[];
-  improvementRecommendations: string[];
-  sourceReferences: string[];
-}
+const JSON_PREVIEW_LENGTH = 400;
 
 /**
  * Template Generation Service
@@ -403,15 +387,23 @@ Return this exact JSON structure:
 
     try {
       const response = await withRateLimit(async () => {
-        // Cast to any to allow response_format until SDK types catch up
         return await client.responses.create({
           model: 'gpt-4.1',
-          instructions: systemPrompt,
-          input: userPrompt,
+          input: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
           temperature: 0.1, // Low for consistency
           max_output_tokens: 8000,
-          response_format: { type: 'json_object' },
-        } as any);
+          text: {
+            format: {
+              type: 'json_schema',
+              name: 'policy_analysis',
+              schema: DOCUMENT_ANALYSIS_JSON_SCHEMA,
+              strict: true,
+            },
+          },
+        });
       });
 
       // Track token usage
@@ -427,40 +419,13 @@ Return this exact JSON structure:
         );
       }
 
-      // Extract content from GPT-4.1 response
-      let content = response.output_text;
+      // Extract and validate with Zod
+      const content = this.extractJsonPayload(response, 'GPT-4.1 analysis response');
 
-      if (!content) {
-        throw Errors.externalServiceError(
-          'GPT-4.1',
-          'Empty response from API. Please try again.'
-        );
-      }
+      // Validate with Zod schema
+      const analysisResult = validateWithSchema(content, DocumentAnalysisSchema);
 
-      // Strip markdown code blocks if GPT-4.1 wrapped JSON in ```json...```
-      content = content.replace(/^```json\s*\n?/m, '').replace(/\n?```\s*$/m, '');
-
-      // Parse JSON with error handling
-      let analysisResult: GPT4DocumentAnalysis;
-      try {
-        analysisResult = JSON.parse(content);
-      } catch (error) {
-        throw Errors.processingFailed(
-          'GPT-4.1 response parsing',
-          `Invalid JSON response: ${(error as Error).message}\n` +
-            `Content preview: ${content.substring(0, 200)}...`
-        );
-      }
-
-      // Validate response structure
-      if (!analysisResult.categories || !Array.isArray(analysisResult.categories)) {
-        throw Errors.processingFailed(
-          'GPT-4.1 response validation',
-          'Response missing required "categories" array. ' +
-            `Received keys: ${Object.keys(analysisResult).join(', ')}`
-        );
-      }
-
+      // Additional business logic validation
       if (analysisResult.categories.length === 0) {
         throw Errors.processingFailed(
           'GPT-4.1 analysis',
@@ -469,17 +434,7 @@ Return this exact JSON structure:
         );
       }
 
-      // Validate each category has required fields
-      analysisResult.categories.forEach((category, index) => {
-        if (!category.name || !category.criteria || !Array.isArray(category.criteria)) {
-          throw Errors.processingFailed(
-            'GPT-4.1 response validation',
-            `Category ${index + 1} missing required fields (name, criteria array)`
-          );
-        }
-      });
-
-      // Convert to DocumentAnalysis format
+      // Convert to DocumentAnalysis format (type compatibility)
       return {
         categories: analysisResult.categories.map((cat) => ({
           name: cat.name,
@@ -500,8 +455,16 @@ Return this exact JSON structure:
         confidence: analysisResult.confidence,
       };
     } catch (error) {
+      // Handle Zod validation errors specifically
+      if (error instanceof Error && error.name === 'ZodError') {
+        throw Errors.processingFailed(
+          'GPT-4.1 response validation',
+          `Invalid response structure: ${error.message}`
+        );
+      }
+
       throw Errors.externalServiceError(
-        'GPT-4o Analysis',
+        'GPT-4.1 Analysis',
         error instanceof Error ? error.message : undefined
       );
     }
@@ -532,51 +495,28 @@ ${fullText}`;
     const response = await withRateLimit(async () => {
       return await client.responses.create({
         model: 'gpt-4.1',
-        instructions: system,
-        input: user,
+        input: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
         temperature: 0.1,
         max_output_tokens: 4000,
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
+        text: {
+          format: {
+            type: 'json_schema',
             name: 'category_discovery',
-            schema: {
-              type: 'object',
-              properties: {
-                categories: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    required: ['name', 'description'],
-                    properties: {
-                      name: { type: 'string' },
-                      description: { type: 'string' },
-                      weight: { type: 'number' },
-                      regulatoryReferences: {
-                        type: 'array',
-                        items: { type: 'string' },
-                      },
-                    },
-                  },
-                },
-              },
-              required: ['categories'],
-              additionalProperties: false,
-            },
+            schema: CATEGORY_DISCOVERY_JSON_SCHEMA,
             strict: true,
           },
         },
-      } as any);
+      });
     });
 
-    const content = response.output_text;
-    const json = JSON.parse(content);
-    return (json.categories || []) as Array<{
-      name: string;
-      description: string;
-      weight?: number;
-      regulatoryReferences?: string[];
-    }>;
+    // Extract and validate with Zod
+    const content = this.extractJsonPayload(response, 'Category discovery');
+    const result = validateWithSchema(content, CategoryDiscoverySchema);
+
+    return result.categories;
   }
 
   /**
@@ -597,63 +537,29 @@ ${fullText}`;
     const response = await withRateLimit(async () => {
       return await client.responses.create({
         model: 'gpt-4.1',
-        instructions: system,
-        input: user,
+        input: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
         temperature: 0.1,
         max_output_tokens: 4000,
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
+        text: {
+          format: {
+            type: 'json_schema',
             name: 'criteria_generation',
-            schema: {
-              type: 'object',
-              properties: {
-                category: { type: 'string' },
-                criteria: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    required: [
-                      'description',
-                      'evidenceRequired',
-                      'scoringMethod',
-                      'weight',
-                    ],
-                    properties: {
-                      description: { type: 'string' },
-                      evidenceRequired: { type: 'string' },
-                      scoringMethod: {
-                        type: 'string',
-                        enum: ['PASS_FAIL', 'NUMERIC', 'CRITICAL_PASS_FAIL'],
-                      },
-                      weight: { type: 'number' },
-                      sourceReference: { type: 'string' },
-                    },
-                    additionalProperties: false,
-                  },
-                },
-              },
-              required: ['criteria'],
-              additionalProperties: false,
-            },
+            schema: CRITERIA_GENERATION_JSON_SCHEMA,
             strict: true,
           },
         },
-      } as any);
+      });
     });
 
-    const content = response.output_text;
-    const json = JSON.parse(content);
-    const items = (json.criteria || []) as Array<{
-      description: string;
-      evidenceRequired: string;
-      scoringMethod: string;
-      weight: number;
-      sourceReference?: string;
-    }>;
+    // Extract and validate with Zod
+    const content = this.extractJsonPayload(response, `Criteria generation (${categoryName})`);
+    const result = validateWithSchema(content, CriteriaGenerationSchema);
 
     // Map to ComplianceCriterion with generated id placeholders (slugify based on index)
-    return items.map((it, idx) => ({
+    return result.criteria.map((it, idx) => ({
       id: `${categoryName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-crit-${idx + 1}`,
       description: it.description,
       evidenceRequired: it.evidenceRequired,
@@ -789,6 +695,146 @@ ${fullText}`;
     }));
 
     return fixedCategories;
+  }
+
+  /**
+   * Extract JSON payload from OpenAI responses.create() API response
+   *
+   * Handles the complex response structure from OpenAI's responses.create() API,
+   * which can have multiple output formats. Also checks for refusals and errors.
+   *
+   * @private
+   * @param response OpenAI API response object
+   * @param context Context string for error messages
+   * @returns Extracted JSON string
+   * @throws {Error} if response is empty, refused, or incomplete
+   */
+  private extractJsonPayload(response: any, context: string): string {
+    // Check for AI refusal
+    if (response?.refusal) {
+      throw Errors.processingFailed(
+        context,
+        `AI refused to respond: ${response.refusal}`
+      );
+    }
+
+    // Check for error status
+    if (response?.error) {
+      throw Errors.externalServiceError(
+        context,
+        response.error.message || 'Unknown API error'
+      );
+    }
+
+    const candidates: string[] = [];
+
+    // Try output_text field (common in responses.create())
+    if (typeof response?.output_text === 'string') {
+      candidates.push(response.output_text);
+    }
+
+    // Try output array (structured outputs format)
+    if (Array.isArray(response?.output)) {
+      const aggregated = response.output
+        .map((item: any) => {
+          if (!item) {
+            return '';
+          }
+
+          if (typeof item === 'string') {
+            return item;
+          }
+
+          if (item.type === 'output_text') {
+            if (typeof item?.text?.value === 'string') {
+              return item.text.value;
+            }
+
+            if (typeof item?.text === 'string') {
+              return item.text;
+            }
+          }
+
+          if (Array.isArray(item.content)) {
+            return item.content
+              .map((contentItem: any) => {
+                if (!contentItem) {
+                  return '';
+                }
+
+                if (typeof contentItem === 'string') {
+                  return contentItem;
+                }
+
+                if (contentItem.type === 'output_text') {
+                  if (typeof contentItem?.text?.value === 'string') {
+                    return contentItem.text.value;
+                  }
+
+                  if (typeof contentItem?.text === 'string') {
+                    return contentItem.text;
+                  }
+                }
+
+                if (contentItem.type === 'text' && typeof contentItem?.text === 'string') {
+                  return contentItem.text;
+                }
+
+                return '';
+              })
+              .join('');
+          }
+
+          return '';
+        })
+        .join('');
+
+      if (aggregated) {
+        candidates.push(aggregated);
+      }
+    }
+
+    // Find first non-empty candidate
+    const content = candidates
+      .map((candidate) => candidate?.trim())
+      .find((candidate) => candidate);
+
+    if (!content) {
+      throw Errors.processingFailed(
+        context,
+        'No textual response returned by GPT-4.1. Response may be empty or in unexpected format.'
+      );
+    }
+
+    // Clean up markdown JSON code blocks if present
+    const cleaned = content.replace(/^```json\s*\n?/m, '').replace(/\n?```\s*$/m, '');
+
+    return cleaned;
+  }
+
+  /**
+   * Parse JSON payload (DEPRECATED - Use validateWithSchema instead)
+   *
+   * This method is kept for backward compatibility but new code should use
+   * validateWithSchema() from @/lib/openai/schemas/utils for Zod validation.
+   *
+   * @deprecated Use validateWithSchema() with Zod schemas instead
+   * @private
+   */
+  private parseJsonPayload<T>(content: string, context: string): T {
+    try {
+      return JSON.parse(content) as T;
+    } catch (error) {
+      const preview =
+        content.length > JSON_PREVIEW_LENGTH
+          ? `${content.slice(0, JSON_PREVIEW_LENGTH)}…`
+          : content;
+
+      throw Errors.processingFailed(
+        context,
+        `Invalid JSON response: ${(error as Error).message}\nContent preview: ${preview}`
+      );
+    }
   }
 
   /**
