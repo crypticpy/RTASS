@@ -119,18 +119,12 @@ export async function POST(request: NextRequest) {
     // Create File object from buffer
     // Note: In a real scenario, we'd use the actual file from storage
     // For now, we'll create a temporary File object
-    const arrayBuffer = new ArrayBuffer(fileBuffer.length);
-    const view = new Uint8Array(arrayBuffer);
-    for (let i = 0; i < fileBuffer.length; i++) {
-      view[i] = fileBuffer[i];
-    }
     const extension = validated.fileName.split('.').pop()?.toLowerCase() ?? '';
     const mimeType = AUDIO_MIME_BY_EXTENSION[extension] ?? 'audio/mpeg';
-    const blob = new Blob([arrayBuffer], { type: mimeType });
     if (typeof globalThis.File === 'undefined') {
       (globalThis as any).File = NodeFile;
     }
-    const audioFile = new NodeFile([blob], validated.fileName, {
+    const audioFile = new NodeFile([fileBuffer], validated.fileName, {
       type: mimeType,
     }) as unknown as File;
 
@@ -299,8 +293,7 @@ async function triggerComplianceAudits(
         operation: 'trigger-audit',
         transcriptId,
         templateId,
-        error: error instanceof Error ? error.message : String(error),
-        errorDetails: error,
+        error: error instanceof Error ? error : new Error(String(error)),
       });
       // Don't throw - continue processing other templates
     }

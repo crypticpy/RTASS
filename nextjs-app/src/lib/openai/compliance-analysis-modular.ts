@@ -415,10 +415,6 @@ export async function scoreSingleCategory(
                       { role: 'user', content: userPrompt },
                     ],
                     temperature,
-                    response_format: zodResponseFormat(
-                      CategoryScoreSchema as any,
-                      'category_score'
-                    ),
                   },
                   {
                     timeout: 3 * 60 * 1000, // 3 minutes for compliance analysis
@@ -502,7 +498,7 @@ export async function scoreSingleCategory(
         status: error.status,
         code: error.code,
         type: error.type,
-        requestId: error.request_id,
+        requestId: error.requestID,
         message: error.message,
         categoryName: category.name,
         criteriaCount: category.criteria.length,
@@ -634,10 +630,6 @@ export async function generateAuditNarrative(
                       { role: 'user', content: userPrompt },
                     ],
                     temperature,
-                    response_format: zodResponseFormat(
-                      AuditNarrativeSchema as any,
-                      'audit_narrative'
-                    ),
                   },
                   {
                     timeout: 3 * 60 * 1000, // 3 minutes for narrative generation
@@ -711,7 +703,7 @@ export async function generateAuditNarrative(
         status: error.status,
         code: error.code,
         type: error.type,
-        requestId: error.request_id,
+        requestId: error.requestID,
         message: error.message,
         categoryCount: categoryScores.length,
         model: options.model || DEFAULT_MODEL,

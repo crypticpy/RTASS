@@ -561,7 +561,6 @@ Provide ONLY the JSON output, no additional text.`;
           model: 'gpt-4.1', // ⚠️ DO NOT change this model
           temperature: 0.1,
           max_output_tokens: 4000,
-          response_format: { type: 'json_object' },
           input: [
             {
               role: 'system',

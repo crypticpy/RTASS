@@ -255,7 +255,6 @@ export async function analyzeCategory(
           { role: 'user', content: userPrompt },
         ],
         temperature: options.temperature ?? 0.3,
-        response_format: { type: 'json_object' },
       });
     });
 

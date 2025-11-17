@@ -153,7 +153,7 @@ export async function transcribeAudio(
         status: error.status,
         code: error.code,
         type: error.type,
-        requestId: error.request_id,
+        requestId: error.requestID,
         message: error.message,
       });
 
@@ -162,7 +162,7 @@ export async function transcribeAudio(
         throw new RateLimitError(
           'OpenAI Whisper API rate limit exceeded',
           undefined,
-          error.request_id,
+          error.requestID ?? undefined,
           error
         );
       }

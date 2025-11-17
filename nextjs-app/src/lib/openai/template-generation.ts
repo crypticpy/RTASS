@@ -196,10 +196,6 @@ export async function generateTemplateFromPolicies(
                   { role: 'user', content: userPrompt },
                 ],
                 temperature: 0.3,
-                response_format: zodResponseFormat(
-                  GeneratedTemplateSchema as any,
-                  'template_generation'
-                ),
               },
               {
                 timeout: 3 * 60 * 1000, // 3 minutes for template generation
@@ -271,7 +267,7 @@ export async function generateTemplateFromPolicies(
         status: error.status,
         code: error.code,
         type: error.type,
-        requestId: error.request_id,
+        requestId: error.requestID,
         message: error.message,
         policyCount: policyTexts.length,
         model: options.model || DEFAULT_MODEL,
