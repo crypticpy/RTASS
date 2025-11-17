@@ -99,53 +99,66 @@ export function ProcessingStatus({
       <CardHeader>
         <CardTitle className="flex items-center justify-between">
           <span>Processing Status</span>
-          {progress.stage !== 'error' && (
-            <Badge variant={progress.stage === 'complete' ? 'default' : 'secondary'}>
-              {Math.round(progress.progress)}%
-            </Badge>
+          {progress.stage === 'complete' && (
+            <Badge variant="default">Complete</Badge>
+          )}
+          {isProcessing && (
+            <Badge variant="secondary">In Progress</Badge>
           )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* Progress Bar */}
-        {progress.stage !== 'error' && (
+        {/* Progress Bar - Only show for complete state */}
+        {progress.stage === 'complete' && (
           <div className="space-y-2">
             <Progress
-              value={progress.progress}
-              className={cn(
-                'h-3',
-                progress.stage === 'complete' && 'bg-green-100 dark:bg-green-950'
-              )}
-              aria-label={`Processing progress: ${Math.round(progress.progress)}%`}
+              value={100}
+              className="h-3 bg-green-100 dark:bg-green-950"
+              aria-label="Processing complete: 100%"
             />
             <div className="flex items-center justify-between text-sm text-muted-foreground">
-              <span>{Math.round(progress.progress)}% complete</span>
-              {progress.estimatedTimeRemaining && progress.stage !== 'complete' && (
-                <span>{formatTimeRemaining(progress.estimatedTimeRemaining)}</span>
-              )}
+              <span>100% complete</span>
             </div>
           </div>
         )}
 
-        {/* Current Stage */}
-        <div className={cn('flex items-center gap-3', config.color)} role="status" aria-live="polite" aria-atomic="true">
-          <StageIcon className={cn('h-6 w-6', isProcessing && 'animate-spin')} aria-hidden="true" />
+        {/* Current Stage - Emphasized for phase-based display */}
+        <div
+          className={cn(
+            'flex items-center gap-4 p-4 rounded-lg border-2',
+            config.color,
+            isProcessing && 'bg-muted/50 border-current/20',
+            progress.stage === 'complete' && 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800'
+          )}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <StageIcon
+            className={cn(
+              'h-8 w-8 shrink-0',
+              isProcessing && 'animate-spin'
+            )}
+            aria-hidden="true"
+          />
           <div className="flex-1">
-            <p className="font-medium">{config.label}</p>
-            <p className="text-sm text-muted-foreground mt-0.5">{progress.message}</p>
+            <p className="font-semibold text-lg">{config.label}</p>
+            <p className="text-sm mt-1 opacity-90">{progress.message}</p>
           </div>
         </div>
 
-        {/* Stage-specific details */}
+        {/* Stage-specific details - Template progress during analyzing */}
         {progress.stage === 'analyzing' && progress.currentTemplate && (
-          <div className="p-3 rounded-lg bg-muted">
-            <div className="text-sm">
-              <p className="text-muted-foreground">Analyzing template:</p>
-              <p className="font-medium mt-1">{progress.currentTemplate}</p>
-              {progress.totalTemplates && (
-                <p className="text-xs text-muted-foreground mt-1">
-                  Template {progress.totalTemplates - (progress.totalTemplates - 1)} of{' '}
-                  {progress.totalTemplates}
+          <div className="p-4 rounded-lg bg-muted border border-muted-foreground/20">
+            <div className="text-sm space-y-2">
+              <p className="text-muted-foreground font-medium">Current Template:</p>
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin text-orange-600 dark:text-orange-400" />
+                <p className="font-semibold">{progress.currentTemplate}</p>
+              </div>
+              {progress.totalTemplates && progress.totalTemplates > 1 && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Analyzing {progress.totalTemplates} template{progress.totalTemplates !== 1 ? 's' : ''} in total
                 </p>
               )}
             </div>

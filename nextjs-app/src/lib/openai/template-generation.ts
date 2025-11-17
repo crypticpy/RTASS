@@ -14,10 +14,21 @@
  * @module lib/openai/template-generation
  */
 
+import OpenAI from 'openai';
 import { zodResponseFormat } from 'openai/helpers/zod';
 import { openai } from './client';
-import { AnalysisError } from './errors';
-import { retryWithBackoff, estimateTokens, logAPICall } from './utils';
+import {
+  AnalysisError,
+  RateLimitError,
+  ServiceUnavailableError,
+  ContextLengthExceededError,
+} from './errors';
+import {
+  retryWithBackoff,
+  estimateTokens,
+  logAPICall,
+  extractResponseText,
+} from './utils';
 import {
   GeneratedTemplateSchema,
   TemplateCategorySchema,
@@ -26,6 +37,9 @@ import {
   type TemplateCategory,
   type TemplateCriterion,
 } from './schemas/template-generation';
+import { wrapOpenAICall, logOpenAISchemaValidation, logger } from '@/lib/logging';
+import { circuitBreakers } from '@/lib/utils/circuitBreaker';
+import { Errors } from '@/lib/services/utils/errorHandlers';
 
 /**
  * Options for template generation
@@ -167,60 +181,128 @@ export async function generateTemplateFromPolicies(
     // Estimate tokens for logging
     const inputTokens = estimateTokens(systemPrompt + userPrompt);
 
-    // ⚠️ CRITICAL: Must use responses.create() API, NOT chat.completions.create()
-    // Call GPT-4.1 with structured outputs using retry logic
-    const completion = await retryWithBackoff(async () => {
-      return await openai.chat.completions.create({
-        model,  // ⚠️ DO NOT change this model
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt,
-          },
-          {
-            role: 'user',
-            content: userPrompt,
-          },
-        ],
-        temperature: 0.3, // Low temperature for consistency
-        response_format: zodResponseFormat(
-          GeneratedTemplateSchema,
-          'template_generation'
-        ),
-      });
+    const completion = await circuitBreakers.openaiGPT4.execute(async () => {
+      return await wrapOpenAICall(
+        'template-generation',
+        model,
+        inputTokens,
+        async () => {
+          return await retryWithBackoff(async () => {
+            return await openai.responses.create(
+              {
+                model, // ⚠️ DO NOT change this model
+                input: [
+                  { role: 'system', content: systemPrompt },
+                  { role: 'user', content: userPrompt },
+                ],
+                temperature: 0.3,
+                response_format: zodResponseFormat(
+                  GeneratedTemplateSchema as any,
+                  'template_generation'
+                ),
+              },
+              {
+                timeout: 3 * 60 * 1000, // 3 minutes for template generation
+              }
+            );
+          });
+        },
+        {
+          estimatedInputTokens: inputTokens,
+          policyCount: policyTexts.length,
+          templateName: options.templateName,
+        }
+      );
     });
 
-    // Check for refusal (AI declined to respond)
-    const message = completion.choices[0]?.message;
-    if (!message) {
-      throw new AnalysisError('No response from GPT-4.1');
-    }
+    const responseText = extractResponseText(
+      completion,
+      'Template generation response'
+    );
 
-    if (message.refusal) {
-      throw new AnalysisError(
-        `AI refused to generate template: ${message.refusal}`,
-        'template-generation'
+    let parsed: GeneratedTemplate;
+    try {
+      parsed = GeneratedTemplateSchema.parse(JSON.parse(responseText));
+
+      logOpenAISchemaValidation(
+        'template-generation',
+        'GeneratedTemplateSchema',
+        true,
+        []
       );
-    }
-
-    // Extract and validate content
-    const responseText = message.content;
-    if (!responseText) {
-      throw new AnalysisError(
-        'Empty response from GPT-4.1',
-        'template-generation'
+    } catch (zodError) {
+      const errors =
+        zodError instanceof Error ? [zodError.message] : ['Unknown validation error'];
+      logOpenAISchemaValidation(
+        'template-generation',
+        'GeneratedTemplateSchema',
+        false,
+        errors
       );
+      throw zodError;
     }
 
-    // Parse with Zod schema validation
-    const parsed = GeneratedTemplateSchema.parse(JSON.parse(responseText));
+    const inputTokenUsage = completion.usage?.input_tokens ?? inputTokens;
+    const outputTokens =
+      completion.usage?.output_tokens ?? estimateTokens(responseText);
+    logAPICall(
+      'template-generation',
+      model,
+      inputTokenUsage,
+      outputTokens
+    );
 
-    // Log API call for monitoring
-    const outputTokens = estimateTokens(responseText);
-    logAPICall('template-generation', model, inputTokens, outputTokens);
+    // Log completion with summary
+    logger.info('Template generation completed successfully', {
+      component: 'openai',
+      operation: 'template-generation',
+      categoryCount: parsed.categories.length,
+      confidence: parsed.confidence,
+      model,
+    });
 
     return parsed;
   } catch (error) {
+    // Handle OpenAI APIError specifically
+    if (error instanceof OpenAI.APIError) {
+      logger.error('OpenAI API error in template generation', {
+        component: 'openai',
+        operation: 'template-generation',
+        status: error.status,
+        code: error.code,
+        type: error.type,
+        requestId: error.request_id,
+        message: error.message,
+        policyCount: policyTexts.length,
+        model: options.model || DEFAULT_MODEL,
+      });
+
+      // Handle specific error types
+      if (error.status === 429) {
+        throw Errors.rateLimited('OpenAI API');
+      } else if (error.status === 503) {
+        throw Errors.serviceUnavailable('OpenAI API');
+      } else if (error.code === 'context_length_exceeded') {
+        throw Errors.contextLimitExceeded();
+      }
+
+      // Generic APIError
+      throw new AnalysisError(
+        `OpenAI API error: ${error.message}`,
+        'template-generation',
+        error
+      );
+    }
+
+    // Log error with context
+    logger.error('Template generation failed', {
+      component: 'openai',
+      operation: 'template-generation',
+      error: error instanceof Error ? error : new Error(String(error)),
+      policyCount: policyTexts.length,
+      model: options.model || DEFAULT_MODEL,
+    });
+
     // Handle Zod validation errors
     if (error instanceof Error && error.name === 'ZodError') {
       throw new AnalysisError(
@@ -279,21 +361,12 @@ export function normalizeWeights(
 /**
  * Normalize criterion weights within a category
  *
- * Ensures criterion weights sum to 1.0 within a category.
+ * NOTE: Criteria no longer have weights in the current schema.
+ * This function is kept for reference but should not be used.
  *
- * @param criteria Array of criteria to normalize
- * @returns Criteria with normalized weights
- *
- * @example
- * ```typescript
- * const criteria = [
- *   { id: '1', weight: 0.6, ... },
- *   { id: '2', weight: 0.5, ... },
- * ];
- * const normalized = normalizeCriterionWeights(criteria);
- * // weights will sum to 1.0
- * ```
+ * @deprecated Criteria weights have been removed from the schema
  */
+/*
 export function normalizeCriterionWeights(
   criteria: TemplateCriterion[]
 ): TemplateCriterion[] {
@@ -309,6 +382,7 @@ export function normalizeCriterionWeights(
     weight: crit.weight / total,
   }));
 }
+*/
 
 /**
  * Validate template structure
@@ -355,16 +429,8 @@ export function validateTemplateStructure(template: GeneratedTemplate): {
       criterionIds.add(criterion.id);
     }
 
-    // Validate criterion weights sum to approximately 1.0
-    const criterionWeightSum = category.criteria.reduce(
-      (sum, c) => sum + c.weight,
-      0
-    );
-    if (Math.abs(criterionWeightSum - 1.0) > 0.01) {
-      errors.push(
-        `Criterion weights in category ${category.id} sum to ${criterionWeightSum.toFixed(2)}, expected 1.0`
-      );
-    }
+    // NOTE: Criteria no longer have weights in the current schema
+    // This validation has been removed
   }
 
   // Validate category weights sum to approximately 1.0

@@ -130,8 +130,8 @@ export const AnalysisCriterionSchema = z.object({
   /** Relative weight within category (0-1) */
   weight: z.number().min(0).max(1),
 
-  /** Source reference (section, page number) */
-  sourceReference: z.string().optional(),
+  /** Source reference (section, page number) - required for OpenAI structured outputs */
+  sourceReference: z.string().min(1),
 });
 
 /**
@@ -198,11 +198,11 @@ export const CategoryDiscoverySchema = z.object({
       /** Brief description */
       description: z.string().min(1),
 
-      /** Initial weight suggestion (0-1) */
-      weight: z.number().min(0).max(1).optional(),
+      /** Initial weight suggestion (0-1) - required for OpenAI structured outputs */
+      weight: z.number().min(0).max(1),
 
-      /** Regulatory references */
-      regulatoryReferences: z.array(z.string()).optional(),
+      /** Regulatory references - required for OpenAI structured outputs */
+      regulatoryReferences: z.array(z.string()),
     })
   ).min(1).max(20), // Hard cap at 20 to prevent runaway generation
 });
@@ -213,8 +213,8 @@ export const CategoryDiscoverySchema = z.object({
  * AI generates specific criteria for a given category.
  */
 export const CriteriaGenerationSchema = z.object({
-  /** Category name (for validation) */
-  category: z.string().optional(),
+  /** Category name (for validation) - required for OpenAI structured outputs */
+  category: z.string().min(1),
 
   /** Generated criteria (soft cap: 10) */
   criteria: z.array(
@@ -231,8 +231,8 @@ export const CriteriaGenerationSchema = z.object({
       /** Relative weight within category */
       weight: z.number().min(0).max(1),
 
-      /** Source reference (optional) */
-      sourceReference: z.string().optional(),
+      /** Source reference - required for OpenAI structured outputs */
+      sourceReference: z.string().min(1),
     })
   ).min(1).max(15), // Hard cap at 15
 });
@@ -322,7 +322,7 @@ export const DOCUMENT_ANALYSIS_JSON_SCHEMA = {
         properties: {
           name: { type: 'string' },
           description: { type: 'string' },
-          weight: { type: 'number' },
+          weight: { type: 'number', minimum: 0, maximum: 1 },
           regulatoryReferences: {
             type: 'array',
             items: { type: 'string' },
@@ -338,6 +338,7 @@ export const DOCUMENT_ANALYSIS_JSON_SCHEMA = {
                 'evidenceRequired',
                 'scoringMethod',
                 'weight',
+                'sourceReference',
               ],
               properties: {
                 id: { type: 'string' },
@@ -347,7 +348,7 @@ export const DOCUMENT_ANALYSIS_JSON_SCHEMA = {
                   type: 'string',
                   enum: ['PASS_FAIL', 'NUMERIC', 'CRITICAL_PASS_FAIL'],
                 },
-                weight: { type: 'number' },
+                weight: { type: 'number', minimum: 0, maximum: 1 },
                 sourceReference: { type: 'string' },
               },
             },
@@ -363,8 +364,8 @@ export const DOCUMENT_ANALYSIS_JSON_SCHEMA = {
       type: 'array',
       items: { type: 'string' },
     },
-    completeness: { type: 'number' },
-    confidence: { type: 'number' },
+    completeness: { type: 'number', minimum: 0, maximum: 1 },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
   },
   required: [
     'categories',
@@ -386,11 +387,11 @@ export const CATEGORY_DISCOVERY_JSON_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        required: ['name', 'description'],
+        required: ['name', 'description', 'weight', 'regulatoryReferences'],
         properties: {
           name: { type: 'string' },
           description: { type: 'string' },
-          weight: { type: 'number' },
+          weight: { type: 'number', minimum: 0, maximum: 1 },
           regulatoryReferences: {
             type: 'array',
             items: { type: 'string' },
@@ -420,6 +421,7 @@ export const CRITERIA_GENERATION_JSON_SCHEMA = {
           'evidenceRequired',
           'scoringMethod',
           'weight',
+          'sourceReference',
         ],
         properties: {
           description: { type: 'string' },
@@ -428,13 +430,13 @@ export const CRITERIA_GENERATION_JSON_SCHEMA = {
             type: 'string',
             enum: ['PASS_FAIL', 'NUMERIC', 'CRITICAL_PASS_FAIL'],
           },
-          weight: { type: 'number' },
+          weight: { type: 'number', minimum: 0, maximum: 1 },
           sourceReference: { type: 'string' },
         },
         additionalProperties: false,
       },
     },
   },
-  required: ['criteria'],
+  required: ['category', 'criteria'],
   additionalProperties: false,
 } as const;

@@ -289,13 +289,18 @@ export class TemplateService {
   }
 
   /**
-   * Validate template structure
+   * Validate template structure with comprehensive data integrity checks
    *
    * Ensures:
+   * - Template has at least one category
+   * - Each category has a name and description
    * - Each category has at least 1 criterion
+   * - Category weights are in valid range (0-1)
    * - Category weights sum to 1.0 (±0.01 tolerance)
-   * - Criterion weights within category sum to 1.0
-   * - Criterion IDs are unique within template
+   * - Criterion IDs are unique across entire template
+   * - Each criterion has required fields (id, description, weight)
+   * - Criterion weights are in valid range (0-1)
+   * - Criterion weights within each category sum to 1.0 (±0.01 tolerance)
    *
    * @param {ComplianceCategory[]} categories - Categories to validate
    * @returns {ValidationResult} Validation result with errors
@@ -321,29 +326,39 @@ export class TemplateService {
 
     // Track criterion IDs for uniqueness check
     const criterionIds = new Set<string>();
+    const duplicateCriterionIds: string[] = [];
 
     // Validate each category
     categories.forEach((category, categoryIndex) => {
+      // Check if category has name
+      if (!category.name || category.name.trim() === '') {
+        errors.push(`Category at index ${categoryIndex} must have a name`);
+      }
+
+      // Check if category has description (optional but recommended)
+      if (!category.description) {
+        // This is a warning, not a hard error
+        // errors.push(`Category "${category.name}" should have a description`);
+      }
+
       // Check if category has criteria
       if (!category.criteria || category.criteria.length === 0) {
         errors.push(
           `Category "${category.name}" must have at least one criterion`
         );
+        return; // Skip further validation for this category
       }
 
-      // Check if category has name
-      if (!category.name) {
-        errors.push(`Category at index ${categoryIndex} must have a name`);
-      }
-
-      // Check if category weight is valid
-      if (
-        category.weight === undefined ||
-        category.weight < 0 ||
-        category.weight > 1
-      ) {
+      // Check if category weight is valid (must be between 0 and 1)
+      if (category.weight === undefined || category.weight === null) {
+        errors.push(`Category "${category.name}" must have a weight`);
+      } else if (category.weight < 0 || category.weight > 1) {
         errors.push(
-          `Category "${category.name}" weight must be between 0 and 1`
+          `Category "${category.name}" weight must be between 0 and 1 (got ${category.weight})`
+        );
+      } else if (category.weight === 0) {
+        errors.push(
+          `Category "${category.name}" weight cannot be 0 (categories with zero weight should be removed)`
         );
       }
 
@@ -351,35 +366,59 @@ export class TemplateService {
       let criterionWeightSum = 0;
 
       category.criteria.forEach((criterion, criterionIndex) => {
-        // Check criterion ID uniqueness
-        if (criterion.id) {
+        // Check criterion has ID
+        if (!criterion.id || criterion.id.trim() === '') {
+          errors.push(
+            `Criterion at index ${criterionIndex} in category "${category.name}" must have an ID`
+          );
+        } else {
+          // Check criterion ID uniqueness
           if (criterionIds.has(criterion.id)) {
+            duplicateCriterionIds.push(criterion.id);
             errors.push(
               `Duplicate criterion ID "${criterion.id}" in category "${category.name}"`
             );
           }
           criterionIds.add(criterion.id);
-        } else {
-          errors.push(
-            `Criterion at index ${criterionIndex} in category "${category.name}" must have an ID`
-          );
         }
 
         // Check criterion has description
-        if (!criterion.description) {
+        if (!criterion.description || criterion.description.trim() === '') {
           errors.push(
             `Criterion "${criterion.id}" in category "${category.name}" must have a description`
           );
         }
 
-        // Check criterion weight
-        if (
-          criterion.weight === undefined ||
-          criterion.weight < 0 ||
-          criterion.weight > 1
-        ) {
+        // Check criterion has evidenceRequired (optional but recommended)
+        if (!criterion.evidenceRequired) {
+          // This is a warning, not a hard error
+          // errors.push(`Criterion "${criterion.id}" should have evidenceRequired field`);
+        }
+
+        // Check criterion has valid scoringMethod
+        const validScoringMethods = ['PASS_FAIL', 'NUMERIC', 'CRITICAL_PASS_FAIL'];
+        if (!criterion.scoringMethod) {
           errors.push(
-            `Criterion "${criterion.id}" weight must be between 0 and 1`
+            `Criterion "${criterion.id}" must have a scoringMethod`
+          );
+        } else if (!validScoringMethods.includes(criterion.scoringMethod)) {
+          errors.push(
+            `Criterion "${criterion.id}" has invalid scoringMethod "${criterion.scoringMethod}". Must be one of: ${validScoringMethods.join(', ')}`
+          );
+        }
+
+        // Check criterion weight
+        if (criterion.weight === undefined || criterion.weight === null) {
+          errors.push(
+            `Criterion "${criterion.id}" must have a weight`
+          );
+        } else if (criterion.weight < 0 || criterion.weight > 1) {
+          errors.push(
+            `Criterion "${criterion.id}" weight must be between 0 and 1 (got ${criterion.weight})`
+          );
+        } else if (criterion.weight === 0) {
+          errors.push(
+            `Criterion "${criterion.id}" weight cannot be 0 (criteria with zero weight should be removed)`
           );
         } else {
           criterionWeightSum += criterion.weight;
@@ -387,12 +426,12 @@ export class TemplateService {
       });
 
       // Check if criterion weights sum to 1.0 (±0.01 tolerance)
-      if (category.criteria.length > 0) {
+      if (category.criteria.length > 0 && criterionWeightSum > 0) {
         if (Math.abs(criterionWeightSum - 1.0) > 0.01) {
           errors.push(
             `Category "${category.name}" criterion weights sum to ${criterionWeightSum.toFixed(
-              2
-            )}, must sum to 1.0`
+              3
+            )}, must sum to 1.0 (±0.01 tolerance)`
           );
         }
       }
@@ -404,11 +443,21 @@ export class TemplateService {
       0
     );
 
-    if (Math.abs(categoryWeightSum - 1.0) > 0.01) {
+    if (categoryWeightSum === 0) {
+      errors.push('Category weights sum to 0. At least one category must have a non-zero weight.');
+    } else if (Math.abs(categoryWeightSum - 1.0) > 0.01) {
       errors.push(
         `Category weights sum to ${categoryWeightSum.toFixed(
-          2
-        )}, must sum to 1.0`
+          3
+        )}, must sum to 1.0 (±0.01 tolerance)`
+      );
+    }
+
+    // Add summary of duplicate IDs if any
+    if (duplicateCriterionIds.length > 0) {
+      const uniqueDuplicates = [...new Set(duplicateCriterionIds)];
+      errors.push(
+        `Found ${uniqueDuplicates.length} duplicate criterion ID(s): ${uniqueDuplicates.join(', ')}`
       );
     }
 

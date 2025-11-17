@@ -11,6 +11,7 @@ import { templateGenerationService } from '@/lib/services/templateGeneration';
 import { policyExtractionService } from '@/lib/services/policyExtraction';
 import { prisma } from '@/lib/db';
 import { handleServiceError } from '@/lib/services/utils/errorHandlers';
+import { validateTokenLimit } from '@/lib/openai/utils';
 import type { TemplateGenerationOptions } from '@/lib/types';
 import { z } from 'zod';
 
@@ -100,6 +101,10 @@ export async function POST(request: NextRequest) {
           (doc.content || '')
       )
       .join('\n');
+
+    // Validate combined content won't exceed GPT-4.1 context limit (120k tokens)
+    // This prevents API failures and provides clear error messages to users
+    validateTokenLimit(combinedText, 120000, 'policyDocuments');
 
     const extractedContent = {
       text: combinedText,

@@ -99,18 +99,17 @@ export async function isDatabaseConnected(): Promise<boolean> {
 }
 
 /**
- * Execute a database transaction with automatic rollback on error.
- * Provides a safe way to perform multiple database operations atomically.
+ * Re-export production-ready transaction utilities from utils/database
  *
- * @template T The return type of the transaction callback
- * @param {Function} callback Function containing the transaction operations
- * @returns {Promise<T>} The result of the transaction
+ * These provide proper timeout configuration, isolation levels, and error handling.
+ *
+ * @see {@link @/lib/utils/database} for implementation details
  *
  * @example
  * ```typescript
- * import { executeTransaction } from '@/lib/db';
+ * import { withTransaction } from '@/lib/db';
  *
- * const result = await executeTransaction(async (tx) => {
+ * const result = await withTransaction(async (tx) => {
  *   const incident = await tx.incident.create({
  *     data: { number: '2024-001', type: 'Fire', ... }
  *   });
@@ -123,16 +122,10 @@ export async function isDatabaseConnected(): Promise<boolean> {
  * });
  * ```
  */
-export async function executeTransaction<T>(
-  callback: (tx: PrismaTransaction) => Promise<T>
-): Promise<T> {
-  return await prisma.$transaction(callback);
-}
+export { withTransaction, type PrismaTransaction } from '@/lib/utils/database';
 
 /**
- * Type export for Prisma Client to use in service layer
+ * Default export for compatibility with dynamic imports.
+ * Used by the logging infrastructure's DatabaseTransport.
  */
-export type PrismaTransaction = Omit<
-  PrismaClient,
-  '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
->;
+export default prisma;

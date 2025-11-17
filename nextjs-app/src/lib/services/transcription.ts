@@ -21,6 +21,9 @@ import type {
   AudioFormat,
 } from '@/lib/types';
 import { createReadStream } from 'fs';
+import fs from 'fs';
+import { validateContent } from '@/lib/utils/validators';
+import { logger } from '@/lib/logging';
 
 // Prisma JSON type helper
 type PrismaJson = Record<string, unknown> | unknown[];
@@ -115,8 +118,21 @@ export class TranscriptionService {
       // Step 2: Get file path for Whisper API
       const filePath = storageService.getFilePath(uploadResult.fileName, 'audio');
 
+      // Step 2b: Verify file still exists (could be deleted during processing)
+      const fileExists = fs.existsSync(filePath);
+      if (!fileExists) {
+        throw Errors.notFound('Audio file', uploadResult.fileName);
+      }
+
       // Step 3: Call Whisper API
       const whisperResponse = await this.callWhisperAPI(filePath, language);
+
+      // Step 3b: Validate transcription is not empty (likely silence or error)
+      const validatedText = validateContent(
+        whisperResponse.text,
+        10,
+        'transcript.text'
+      );
 
       // Step 4: Process segments
       const segments = this.processSegments(whisperResponse.segments);
@@ -130,19 +146,41 @@ export class TranscriptionService {
       // Step 6: Run emergency detection if requested
       let detections;
       if (detectMayday) {
-        const maydayDetections = emergencyDetectionService.detectMayday(
-          whisperResponse.text,
-          segments
-        );
-        const emergencyTerms = emergencyDetectionService.detectEmergencyTerms(
-          whisperResponse.text,
-          segments
-        );
+        // Only run emergency detection if we have valid segments
+        if (segments && segments.length > 0) {
+          const maydayDetections = emergencyDetectionService.detectMayday(
+            validatedText,
+            segments
+          );
+          const emergencyTerms = emergencyDetectionService.detectEmergencyTerms(
+            validatedText,
+            segments
+          );
 
-        detections = {
-          mayday: maydayDetections,
-          emergency: emergencyTerms,
-        };
+          detections = {
+            mayday: maydayDetections,
+            emergency: emergencyTerms,
+          };
+
+          logger.info('Emergency detection completed', {
+            component: 'transcription-service',
+            operation: 'emergency-detection',
+            incidentId,
+            segmentCount: segments.length,
+            maydayCount: maydayDetections.length,
+            emergencyTermCount: emergencyTerms.length,
+          });
+        } else {
+          // Log warning when segments are missing or empty
+          logger.warn('Skipping emergency detection: no segments available', {
+            component: 'transcription-service',
+            operation: 'transcribe-audio',
+            incidentId,
+            hasSegments: !!segments,
+            segmentCount: segments?.length || 0,
+            transcriptLength: validatedText.length,
+          });
+        }
       }
 
       // Step 7: Prepare metadata
@@ -161,7 +199,7 @@ export class TranscriptionService {
         duration: Math.round(whisperResponse.duration),
         fileSize: uploadResult.size,
         format: this.detectAudioFormat(uploadResult.originalName),
-        text: whisperResponse.text,
+        text: validatedText,
         segments,
         metadata,
         detections,
@@ -218,6 +256,8 @@ export class TranscriptionService {
           language,
           response_format: 'verbose_json',
           temperature: 0.0, // More deterministic
+        }, {
+          timeout: 5 * 60 * 1000, // 5 minutes for large audio files
         });
       });
 
@@ -340,6 +380,15 @@ export class TranscriptionService {
    *
    * Persists transcript with all associated data and relationships.
    *
+   * **Transaction Decision**: This method does NOT use a database transaction because:
+   * - It performs a single atomic `create()` operation (already atomic)
+   * - No multi-step database writes exist
+   * - Adding transaction overhead provides no benefit
+   *
+   * **Future Consideration**: If this method is extended to include additional
+   * operations (e.g., updating incident status, creating related records),
+   * wrap the multi-step operations in `withTransaction()` from `@/lib/utils/database`.
+   *
    * @private
    * @param {object} data - Transcript data to save
    * @returns {Promise} Saved transcript from database
@@ -380,9 +429,16 @@ export class TranscriptionService {
       });
 
       return transcript;
-    } catch (error) {
+    } catch (error: any) {
+      // Handle Prisma foreign key constraint violation (P2003)
+      // This occurs when the referenced incident was deleted during processing
+      if (error.code === 'P2003') {
+        throw Errors.notFound('Incident', data.incidentId);
+      }
+
+      // Handle other database errors
       throw Errors.processingFailed(
-        'Database save',
+        'Transcript save',
         error instanceof Error ? error.message : 'Unknown error'
       );
     }

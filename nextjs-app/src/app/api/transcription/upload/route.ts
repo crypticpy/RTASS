@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Upload file to storage
+    // Upload file to storage (includes validation)
     const result = await storageService.uploadAudio(
       file,
       incidentId || undefined

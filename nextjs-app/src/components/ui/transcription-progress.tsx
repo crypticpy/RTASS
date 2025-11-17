@@ -21,7 +21,7 @@ export interface TranscriptionProgressProps {
   fileSize: number
 
   /** Progress tracking */
-  status: 'uploading' | 'processing' | 'analyzing' | 'complete' | 'error'
+  status: 'uploading' | 'uploaded' | 'processing' | 'analyzing' | 'complete' | 'error'
   uploadProgress?: number // 0-100
   processingProgress?: number // 0-100
 
@@ -90,7 +90,7 @@ export const TranscriptionProgress = React.memo(function TranscriptionProgress({
 
   // Calculate estimated time remaining based on status
   const getEstimatedTime = (): string | null => {
-    if (status === 'complete' || status === 'error') return null
+    if (status === 'uploaded' || status === 'complete' || status === 'error') return null
 
     if (status === 'uploading' && uploadProgress > 0) {
       const remaining = Math.ceil((100 - uploadProgress) * 0.3) // ~0.3s per %
@@ -114,6 +114,8 @@ export const TranscriptionProgress = React.memo(function TranscriptionProgress({
     switch (status) {
       case 'uploading':
         return uploadProgress
+      case 'uploaded':
+        return 100
       case 'processing':
         return processingProgress
       case 'analyzing':
@@ -131,6 +133,11 @@ export const TranscriptionProgress = React.memo(function TranscriptionProgress({
       icon: <Loader2 className="h-5 w-5 animate-spin" />,
       label: 'Uploading audio file',
       color: 'text-ems-blue',
+    },
+    uploaded: {
+      icon: <CheckCircle2 className="h-5 w-5" />,
+      label: 'Upload complete — ready to analyze',
+      color: 'text-emergency-green',
     },
     processing: {
       icon: <Loader2 className="h-5 w-5 animate-spin" />,
@@ -226,6 +233,7 @@ export const TranscriptionProgress = React.memo(function TranscriptionProgress({
         >
           {status === 'uploading' && uploadProgress !== undefined &&
             `Uploading ${uploadProgress}% complete`}
+          {status === 'uploaded' && 'Upload complete. Ready for analysis.'}
           {status === 'processing' && processingProgress !== undefined &&
             `Processing ${processingProgress}% complete`}
           {status === 'analyzing' && 'Analyzing transcript for emergencies'}

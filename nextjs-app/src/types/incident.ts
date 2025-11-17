@@ -251,3 +251,43 @@ export interface EmergencyEvent {
   text: string; // Segment text
   context?: string; // Surrounding context
 }
+
+/**
+ * Real-Time Processing Status Types
+ * Used for polling processing status from /api/incidents/[id]/status
+ */
+
+export type ProcessingPhase = 'transcribing' | 'analyzing' | 'complete' | 'error';
+export type TranscriptionStatus = 'pending' | 'processing' | 'complete' | 'failed';
+export type AuditStatus = 'pending' | 'processing' | 'complete' | 'failed';
+
+export interface IncidentInfo {
+  id: string;
+  number: string;
+  type: string;
+  severity: string;
+  status: string;
+}
+
+export interface TranscriptionInfo {
+  status: TranscriptionStatus;
+  transcriptId?: string;
+  duration?: number;
+  segments?: number;
+}
+
+export interface AuditProgress {
+  templateId: string;
+  templateName: string;
+  status: AuditStatus;
+  auditId?: string;
+  overallScore?: number;
+  overallStatus?: 'PASS' | 'FAIL' | 'NEEDS_IMPROVEMENT';
+}
+
+export interface ProcessingStatusResponse {
+  incident: IncidentInfo;
+  transcription: TranscriptionInfo;
+  audits: AuditProgress[];
+  phase: ProcessingPhase;
+}

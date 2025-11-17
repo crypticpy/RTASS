@@ -125,15 +125,27 @@ export class StorageService {
     file: File,
     incidentId?: string
   ): Promise<FileUploadResult> {
-    // Validate audio file
+    // Validate audio file (includes size and MIME type validation)
     const validation = validateFile(file, 'audio');
     if (!validation.valid) {
+      // Log validation failure with details
+      console.error('[UPLOAD_VALIDATION_FAILED]', {
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type,
+        error: validation.error,
+        details: validation.details,
+      });
       throw Errors.invalidFile(validation.error!, validation.details);
     }
 
     // Detect audio format
     const format = detectAudioFormat(file.name, file.type);
     if (!format) {
+      console.error('[AUDIO_FORMAT_DETECTION_FAILED]', {
+        fileName: file.name,
+        mimeType: file.type,
+      });
       throw Errors.unsupportedFormat(file.type, [
         'mp3',
         'mp4',
@@ -154,7 +166,19 @@ export class StorageService {
     try {
       const buffer = Buffer.from(await file.arrayBuffer());
       await fs.writeFile(filePath, buffer);
+
+      console.log('[AUDIO_UPLOAD_SUCCESS]', {
+        fileName,
+        originalName: file.name,
+        size: file.size,
+        format,
+        incidentId,
+      });
     } catch (error) {
+      console.error('[AUDIO_UPLOAD_FAILED]', {
+        fileName,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
       throw Errors.processingFailed(
         'File upload',
         error instanceof Error ? error.message : 'Unknown error'
@@ -190,15 +214,27 @@ export class StorageService {
    * ```
    */
   async uploadDocument(file: File): Promise<FileUploadResult> {
-    // Validate document file
+    // Validate document file (includes size and MIME type validation)
     const validation = validateFile(file, 'document');
     if (!validation.valid) {
+      // Log validation failure with details
+      console.error('[DOCUMENT_VALIDATION_FAILED]', {
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type,
+        error: validation.error,
+        details: validation.details,
+      });
       throw Errors.invalidFile(validation.error!, validation.details);
     }
 
     // Detect document format
     const format = detectDocumentFormat(file.name, file.type);
     if (!format) {
+      console.error('[DOCUMENT_FORMAT_DETECTION_FAILED]', {
+        fileName: file.name,
+        mimeType: file.type,
+      });
       throw Errors.unsupportedFormat(file.type, [
         'pdf',
         'docx',
@@ -220,7 +256,18 @@ export class StorageService {
     try {
       const buffer = Buffer.from(await file.arrayBuffer());
       await fs.writeFile(filePath, buffer);
+
+      console.log('[DOCUMENT_UPLOAD_SUCCESS]', {
+        fileName,
+        originalName: file.name,
+        size: file.size,
+        format,
+      });
     } catch (error) {
+      console.error('[DOCUMENT_UPLOAD_FAILED]', {
+        fileName,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
       throw Errors.processingFailed(
         'Document upload',
         error instanceof Error ? error.message : 'Unknown error'

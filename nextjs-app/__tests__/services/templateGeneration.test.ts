@@ -13,14 +13,15 @@ import type {
 } from '@/lib/types';
 
 // Mock OpenAI client
+const responsesCreateMock = jest.fn();
+const mockOpenAIClient = {
+  responses: {
+    create: responsesCreateMock,
+  },
+};
+
 jest.mock('@/lib/services/utils/openai', () => ({
-  getOpenAIClient: jest.fn(() => ({
-    chat: {
-      completions: {
-        create: jest.fn(),
-      },
-    },
-  })),
+  getOpenAIClient: jest.fn(() => mockOpenAIClient),
   withRateLimit: jest.fn((fn) => fn()),
   trackTokenUsage: jest.fn(),
 }));
@@ -400,13 +401,13 @@ describe('TemplateGenerationService', () => {
   describe('Integration - generateFromContent', () => {
     it('should generate template from extracted content', async () => {
       const content: ExtractedContent = {
-        text: 'Fire Department Safety Policy\n\nAll personnel must follow NFPA 1561 standards.',
+        text: 'Fire Department Safety Policy\n\nAll personnel must follow NFPA 1561 standards for incident command system operations. This includes proper radio communications, accountability procedures, and emergency evacuation protocols.',
         sections: [
           {
             id: 'section-1',
             title: 'Safety Policy',
             level: 1,
-            content: 'All personnel must follow NFPA 1561 standards.',
+            content: 'All personnel must follow NFPA 1561 standards for incident command system operations. This includes proper radio communications, accountability procedures, and emergency evacuation protocols.',
           },
         ],
         metadata: {
@@ -443,10 +444,49 @@ describe('TemplateGenerationService', () => {
         confidence: 0.85,
       };
 
-      const { getOpenAIClient } = require('@/lib/services/utils/openai');
-      getOpenAIClient().chat.completions.create.mockResolvedValue({
-        choices: [{ message: { content: JSON.stringify(mockGPTResponse) } }],
-        usage: { prompt_tokens: 100, completion_tokens: 200, total_tokens: 300 },
+      const mockCategoryDiscovery = {
+        categories: [
+          {
+            name: 'Personnel Safety',
+            description: 'Safety protocols for personnel',
+            weight: 1.0,
+            regulatoryReferences: ['NFPA 1561'],
+          },
+        ],
+      };
+
+      const mockCriteriaResponse = {
+        category: 'Personnel Safety',
+        criteria: [
+          {
+            description: 'Follow NFPA 1561 standards',
+            evidenceRequired: 'Compliance documentation',
+            scoringMethod: 'PASS_FAIL',
+            weight: 1.0,
+            sourceReference: 'Section 1',
+          },
+        ],
+      };
+
+      responsesCreateMock.mockReset();
+      responsesCreateMock.mockImplementation(({ text }) => {
+        const schemaName = text?.format?.name;
+        if (schemaName === 'category_discovery') {
+          return Promise.resolve({
+            output_text: JSON.stringify(mockCategoryDiscovery),
+            usage: { input_tokens: 80, output_tokens: 120, total_tokens: 200 },
+          });
+        }
+        if (schemaName === 'criteria_generation') {
+          return Promise.resolve({
+            output_text: JSON.stringify(mockCriteriaResponse),
+            usage: { input_tokens: 60, output_tokens: 100, total_tokens: 160 },
+          });
+        }
+        return Promise.resolve({
+          output_text: JSON.stringify(mockGPTResponse),
+          usage: { input_tokens: 100, output_tokens: 200, total_tokens: 300 },
+        });
       });
 
       const result = await service.generateFromContent(content, {

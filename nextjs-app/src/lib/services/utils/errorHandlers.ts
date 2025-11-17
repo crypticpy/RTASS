@@ -32,9 +32,12 @@ export class ServiceError extends Error {
     super(message);
     this.name = 'ServiceError';
 
-    // Maintains proper stack trace for where error was thrown (V8 only)
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, ServiceError);
+    // Maintains proper stack trace for where error was thrown
+    // Fallback for non-V8 environments (e.g., Safari, older Node.js)
+    if (typeof Error.captureStackTrace === 'function') {
+      Error.captureStackTrace(this, this.constructor);
+    } else {
+      this.stack = new Error().stack;
     }
   }
 
@@ -137,31 +140,77 @@ function isOpenAIError(error: unknown): boolean {
 function handleOpenAIError(error: any): APIError {
   const status = error.status || 502;
   const message = error.message || 'OpenAI API error';
+  const errorCode = error.code;
 
-  // Rate limit errors
-  if (status === 429) {
+  // Parse OpenAI-specific error codes
+  // https://platform.openai.com/docs/guides/error-codes
+
+  // Quota exceeded error
+  if (errorCode === 'insufficient_quota') {
+    return {
+      error: 'OPENAI_QUOTA_EXCEEDED',
+      message: 'OpenAI API quota exceeded. Please check your billing settings.',
+      details: { code: errorCode },
+      statusCode: 429,
+    };
+  }
+
+  // Context length exceeded error
+  if (errorCode === 'context_length_exceeded') {
+    return {
+      error: 'CONTEXT_LIMIT_EXCEEDED',
+      message: 'Content exceeds model context limit. Please reduce input size.',
+      details: { code: errorCode },
+      statusCode: 400,
+    };
+  }
+
+  // Invalid request error (e.g., invalid parameters)
+  if (errorCode === 'invalid_request_error') {
+    return {
+      error: 'OPENAI_INVALID_REQUEST',
+      message: message || 'Invalid request to OpenAI API',
+      details: { code: errorCode },
+      statusCode: 400,
+    };
+  }
+
+  // Model not found or unavailable
+  if (errorCode === 'model_not_found') {
+    return {
+      error: 'OPENAI_MODEL_UNAVAILABLE',
+      message: 'The requested model is not available',
+      details: { code: errorCode },
+      statusCode: 400,
+    };
+  }
+
+  // Rate limit errors (fallback to status code)
+  if (status === 429 || errorCode === 'rate_limit_exceeded') {
     return {
       error: 'OPENAI_RATE_LIMIT',
       message: 'OpenAI API rate limit exceeded. Please try again later.',
-      details: { retryAfter: error.headers?.['retry-after'] },
+      details: { retryAfter: error.headers?.['retry-after'], code: errorCode },
       statusCode: 429,
     };
   }
 
   // Invalid API key
-  if (status === 401) {
+  if (status === 401 || errorCode === 'invalid_api_key') {
     return {
       error: 'OPENAI_AUTH_ERROR',
       message: 'OpenAI API authentication failed',
+      details: { code: errorCode },
       statusCode: 500, // Don't expose auth issues to client
     };
   }
 
   // Server errors
-  if (status >= 500) {
+  if (status >= 500 || errorCode === 'server_error') {
     return {
       error: 'OPENAI_SERVER_ERROR',
       message: 'OpenAI API is temporarily unavailable',
+      details: { code: errorCode },
       statusCode: 502,
     };
   }
@@ -170,7 +219,7 @@ function handleOpenAIError(error: any): APIError {
   return {
     error: 'OPENAI_ERROR',
     message,
-    details: error.type,
+    details: { type: error.type, code: errorCode },
     statusCode: status,
   };
 }
@@ -256,13 +305,43 @@ function isZodError(error: unknown): boolean {
 
 /**
  * Handle Zod validation errors
+ *
+ * Enhanced to include received and expected values for better debugging
  */
 function handleZodError(error: any): APIError {
-  const issues = error.issues.map((issue: any) => ({
-    path: issue.path.join('.'),
-    message: issue.message,
-    code: issue.code,
-  }));
+  const issues = error.issues.map((issue: any) => {
+    const issueDetails: {
+      path: string;
+      message: string;
+      code: string;
+      received?: string;
+      expected?: string;
+    } = {
+      path: issue.path.join('.') || 'root',
+      message: issue.message,
+      code: issue.code,
+    };
+
+    // Add received value if available (for debugging)
+    // Note: Avoid logging sensitive data in production
+    if (issue.received !== undefined) {
+      try {
+        issueDetails.received = JSON.stringify(issue.received);
+      } catch {
+        issueDetails.received = String(issue.received);
+      }
+    }
+
+    // Add expected value/type if available
+    if (issue.expected !== undefined) {
+      issueDetails.expected = String(issue.expected);
+    } else if (issue.code === 'invalid_type') {
+      // For type errors, extract expected type from validation
+      issueDetails.expected = issue.expectedType || issue.options?.join(' | ');
+    }
+
+    return issueDetails;
+  });
 
   return {
     error: 'VALIDATION_ERROR',
@@ -380,6 +459,50 @@ export const Errors = {
     ),
 
   /**
+   * OpenAI API rate limit error (429)
+   */
+  rateLimited: (resource: string = 'OpenAI API') =>
+    new ServiceError(
+      'OPENAI_RATE_LIMITED',
+      `${resource} rate limit exceeded. Please try again later.`,
+      { resource },
+      429
+    ),
+
+  /**
+   * Service temporarily unavailable error (503)
+   */
+  serviceUnavailable: (service: string) =>
+    new ServiceError(
+      'SERVICE_UNAVAILABLE',
+      `${service} is temporarily unavailable. Please try again.`,
+      { service },
+      503
+    ),
+
+  /**
+   * Context length exceeded error
+   */
+  contextLimitExceeded: (limit?: number, actual?: number) =>
+    new ServiceError(
+      'CONTEXT_LIMIT_EXCEEDED',
+      'Content exceeds model context limit. Please reduce input size.',
+      { limit, actual },
+      400
+    ),
+
+  /**
+   * OpenAI quota exceeded error
+   */
+  quotaExceeded: (message: string = 'OpenAI API quota exceeded') =>
+    new ServiceError(
+      'OPENAI_QUOTA_EXCEEDED',
+      message,
+      undefined,
+      429
+    ),
+
+  /**
    * External service errors
    */
   externalServiceError: (service: string, message?: string) =>
@@ -388,6 +511,17 @@ export const Errors = {
       `${service} is temporarily unavailable${message ? `: ${message}` : ''}`,
       { service },
       502
+    ),
+
+  /**
+   * Storage errors
+   */
+  storageError: (message: string, details?: any) =>
+    new ServiceError(
+      'STORAGE_ERROR',
+      message,
+      details,
+      500
     ),
 };
 
@@ -411,8 +545,8 @@ export const Errors = {
  */
 export function withErrorHandling<T extends (...args: any[]) => Promise<any>>(
   fn: T
-): (...args: Parameters<T>) => Promise<ReturnType<T>> {
-  return async (...args: Parameters<T>): Promise<ReturnType<T>> => {
+): (...args: Parameters<T>) => Promise<Awaited<ReturnType<T>>> {
+  return async (...args: Parameters<T>): Promise<Awaited<ReturnType<T>>> => {
     try {
       return await fn(...args);
     } catch (error) {

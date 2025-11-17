@@ -8,6 +8,7 @@
 
 import OpenAI from 'openai';
 import { prisma } from '@/lib/db';
+import { logger, logRateLimitWait, estimateOpenAICost } from '@/lib/logging';
 
 /**
  * Token usage information from OpenAI API
@@ -78,6 +79,24 @@ export async function trackTokenUsage(
   operationType: string
 ): Promise<void> {
   try {
+    // Calculate estimated cost using logging utility
+    const cost = estimateOpenAICost(model, {
+      inputTokens: usage.promptTokens,
+      outputTokens: usage.completionTokens,
+      totalTokens: usage.totalTokens,
+    });
+
+    // Log token usage with structured logging
+    logger.info('Token usage tracked', {
+      component: 'openai',
+      operation: operationType,
+      model,
+      inputTokens: usage.promptTokens,
+      outputTokens: usage.completionTokens,
+      totalTokens: usage.totalTokens,
+      estimatedCost: cost,
+    });
+
     await prisma.systemMetrics.create({
       data: {
         metricName: 'openai_token_usage',
@@ -87,13 +106,19 @@ export async function trackTokenUsage(
           operationType,
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
+          estimatedCost: cost,
           timestamp: new Date().toISOString(),
         },
       },
     });
   } catch (error) {
-    // Log error but don't fail the operation
-    console.error('Failed to track token usage:', error);
+    // Log error with structured logging
+    logger.error('Failed to track token usage', {
+      component: 'openai',
+      operation: operationType,
+      model,
+      error: error instanceof Error ? error : new Error(String(error)),
+    });
   }
 }
 
@@ -205,6 +230,8 @@ class RateLimiter {
    * @returns {Promise<void>} Resolves when request can proceed
    */
   async waitForSlot(): Promise<void> {
+    let waitLogged = false;
+
     while (true) {
       this.cleanOldTimestamps();
 
@@ -217,6 +244,17 @@ class RateLimiter {
         this.recordRequest();
         this.pendingSlots--; // Release reservation
         return;
+      }
+
+      // Log rate limit wait (only once per wait cycle)
+      if (!waitLogged) {
+        logRateLimitWait(
+          'api-call',
+          1000,
+          this.requestTimestamps.length,
+          this.maxRequestsPerMinute
+        );
+        waitLogged = true;
       }
 
       // Wait 1 second before checking again

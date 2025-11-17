@@ -20,10 +20,8 @@ import type { CategoryScore } from '@/lib/schemas/compliance-analysis.schema';
 // Mock OpenAI client
 jest.mock('../client', () => ({
   openai: {
-    chat: {
-      completions: {
-        create: jest.fn(),
-      },
+    responses: {
+      create: jest.fn(),
     },
   },
 }));
@@ -163,7 +161,7 @@ describe('compliance-analysis-modular', () => {
 
   describe('scoreSingleCategory', () => {
     it('should score a category successfully with valid response', async () => {
-      const mockResponse = {
+      const mockResponse: any = {
         choices: [
           {
             message: {
@@ -234,10 +232,17 @@ describe('compliance-analysis-modular', () => {
             },
           },
         ],
+        usage: {
+          input_tokens: 1200,
+          output_tokens: 300,
+        },
       };
 
+      mockResponse.output_text = mockResponse.choices[0].message.content;
+
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { openai } = require('../client');
-      openai.chat.completions.create.mockResolvedValue(mockResponse);
+      openai.responses.create.mockResolvedValue(mockResponse);
 
       const result = await scoreSingleCategory(
         mockTranscript,
@@ -255,18 +260,19 @@ describe('compliance-analysis-modular', () => {
 
     it('should handle AI refusal gracefully', async () => {
       const mockResponse = {
-        choices: [
+        output: [
           {
-            message: {
-              content: null,
-              refusal: 'I cannot analyze this content for safety reasons',
+            type: 'refusal',
+            refusal: {
+              reason: 'I cannot analyze this content for safety reasons',
             },
           },
         ],
       };
 
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { openai } = require('../client');
-      openai.chat.completions.create.mockResolvedValue(mockResponse);
+      openai.responses.create.mockResolvedValue(mockResponse);
 
       await expect(
         scoreSingleCategory(
@@ -275,7 +281,7 @@ describe('compliance-analysis-modular', () => {
           mockCategory,
           mockIncidentContext
         )
-      ).rejects.toThrow('AI refused to score category');
+      ).rejects.toThrow('Failed to score category "Communication Protocols"');
     });
 
     it('should validate input parameters', async () => {
@@ -319,7 +325,7 @@ describe('compliance-analysis-modular', () => {
     ];
 
     it('should generate comprehensive narrative from category scores', async () => {
-      const mockResponse = {
+      const mockResponse: any = {
         choices: [
           {
             message: {
@@ -372,10 +378,17 @@ describe('compliance-analysis-modular', () => {
             },
           },
         ],
+        usage: {
+          input_tokens: 900,
+          output_tokens: 250,
+        },
       };
 
+      mockResponse.output_text = mockResponse.choices[0].message.content;
+
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { openai } = require('../client');
-      openai.chat.completions.create.mockResolvedValue(mockResponse);
+      openai.responses.create.mockResolvedValue(mockResponse);
 
       const result = await generateAuditNarrative(
         mockTranscript,

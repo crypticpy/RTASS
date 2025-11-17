@@ -6,6 +6,7 @@
  */
 
 import { RateLimitError, InvalidResponseError, OpenAIError } from './errors';
+import { logger, logOpenAIRetry } from '@/lib/logging';
 
 /**
  * Sleep for a specified number of milliseconds
@@ -26,7 +27,7 @@ function sleep(ms: number): Promise<void> {
  * @example
  * ```typescript
  * const result = await retryWithBackoff(
- *   async () => await openai.chat.completions.create({...}),
+ *   async () => await openai.responses.create({...}),
  *   3
  * );
  * ```
@@ -60,9 +61,15 @@ export async function retryWithBackoff<T>(
       const jitter = Math.random() * 0.1 * delay; // Add 0-10% jitter
       const totalDelay = delay + jitter;
 
-      console.warn(
-        `Attempt ${attempt + 1}/${maxRetries} failed. Retrying in ${Math.round(totalDelay)}ms...`,
-        error
+      // Log retry attempt with structured logging
+      const errorMessage = lastError instanceof Error ? lastError.message : String(lastError);
+      logOpenAIRetry(
+        'api-call',
+        'unknown',
+        attempt + 1,
+        maxRetries,
+        Math.round(totalDelay),
+        errorMessage
       );
 
       await sleep(totalDelay);
@@ -128,6 +135,46 @@ export function estimateTokens(text: string): number {
   const estimate = Math.ceil(charCount / 4 + wordCount * 0.33);
 
   return estimate;
+}
+
+/**
+ * Validates that text content won't exceed GPT-4.1 context window limits
+ *
+ * GPT-4.1 has a 128k token context window. We reserve 8k tokens for the response,
+ * leaving 120k tokens maximum for input content (prompts + documents).
+ *
+ * This validation uses conservative token estimation to prevent API failures
+ * due to context window overflow.
+ *
+ * @param text - Text content to validate
+ * @param maxTokens - Maximum allowed tokens (default: 120000 for GPT-4.1)
+ * @param fieldName - Field name for error messages (default: 'content')
+ * @throws InvalidInputError if content exceeds token limit
+ *
+ * @example
+ * ```typescript
+ * // Validate policy document before template generation
+ * validateTokenLimit(policyText, 120000, 'policyDocument');
+ *
+ * // Validate combined multi-document content
+ * const combined = docs.join('\n\n');
+ * validateTokenLimit(combined, 120000, 'combinedDocuments');
+ * ```
+ */
+export function validateTokenLimit(
+  text: string,
+  maxTokens: number = 120000,
+  fieldName: string = 'content'
+): void {
+  const estimatedTokens = estimateTokens(text);
+
+  if (estimatedTokens > maxTokens) {
+    throw new InvalidResponseError(
+      `${fieldName} exceeds GPT-4.1 context limit: ${estimatedTokens.toLocaleString()} tokens > ${maxTokens.toLocaleString()} max. ` +
+      `Consider splitting into smaller documents or reducing content size.`,
+      { estimatedTokens, maxTokens, contentLength: text.length }
+    );
+  }
 }
 
 /**
@@ -263,17 +310,123 @@ export function logAPICall(
   inputTokens?: number,
   outputTokens?: number
 ): void {
-  const timestamp = new Date().toISOString();
   const totalTokens = (inputTokens || 0) + (outputTokens || 0);
 
-  console.log(
-    JSON.stringify({
-      timestamp,
-      operation,
-      model,
-      inputTokens,
-      outputTokens,
-      totalTokens,
-    })
-  );
+  // Use structured logging instead of console.log
+  logger.info('OpenAI API call logged', {
+    component: 'openai',
+    operation,
+    model,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+  });
+}
+
+/**
+ * Extract textual content from OpenAI Responses API result
+ *
+ * Handles both `output_text` convenience property and the
+ * nested `output` array structure that may contain multiple
+ * content blocks (text segments, tool calls, etc.). Also
+ * strips Markdown code fences so callers can safely parse
+ * JSON payloads without additional cleanup.
+ *
+ * @param response Raw OpenAI Responses API result
+ * @param context Descriptive context for error reporting
+ * @returns Extracted textual content
+ * @throws InvalidResponseError when no textual content is present
+ */
+export function extractResponseText(response: any, context: string): string {
+  if (!response) {
+    throw new InvalidResponseError(
+      `${context}: OpenAI response was empty`,
+      response
+    );
+  }
+
+  const candidates: string[] = [];
+
+  if (typeof response.output_text === 'string' && response.output_text.trim()) {
+    candidates.push(response.output_text);
+  }
+
+  if (Array.isArray(response.output)) {
+    const aggregated = response.output
+      .map((item: any) => {
+        if (!item) {
+          return '';
+        }
+
+        if (typeof item === 'string') {
+          return item;
+        }
+
+        if (item.type === 'output_text') {
+          if (typeof item?.text?.value === 'string') {
+            return item.text.value;
+          }
+
+          if (typeof item?.text === 'string') {
+            return item.text;
+          }
+        }
+
+        if (Array.isArray(item.content)) {
+          return item.content
+            .map((contentItem: any) => {
+              if (!contentItem) {
+                return '';
+              }
+
+              if (typeof contentItem === 'string') {
+                return contentItem;
+              }
+
+              if (contentItem.type === 'output_text') {
+                if (typeof contentItem?.text?.value === 'string') {
+                  return contentItem.text.value;
+                }
+
+                if (typeof contentItem?.text === 'string') {
+                  return contentItem.text;
+                }
+              }
+
+              if (
+                contentItem.type === 'text' &&
+                typeof contentItem?.text === 'string'
+              ) {
+                return contentItem.text;
+              }
+
+              return '';
+            })
+            .join('');
+        }
+
+        return '';
+      })
+      .join('');
+
+    if (aggregated) {
+      candidates.push(aggregated);
+    }
+  }
+
+  const content = candidates
+    .map((candidate) => candidate?.trim())
+    .find((candidate) => candidate);
+
+  if (!content) {
+    throw new InvalidResponseError(
+      `${context}: OpenAI response did not include textual content`,
+      response
+    );
+  }
+
+  return content
+    .replace(/^```json\s*\n?/m, '')
+    .replace(/\n?```\s*$/m, '')
+    .trim();
 }

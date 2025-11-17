@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useId, useRef, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -31,6 +31,8 @@ export function AudioUploader({
   disabled = false,
   className,
 }: AudioUploaderProps) {
+  const inputId = useId();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [metadata, setMetadata] = useState<AudioMetadata | null>(null);
@@ -177,22 +179,33 @@ export function AudioUploader({
     [disabled, handleFileSelection]
   );
 
-  // Handle file input change
+   // Handle file input change
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
       if (files && files.length > 0) {
         handleFileSelection(files[0]);
+        // Reset input value so selecting the same file again re-triggers change
+        e.target.value = '';
       }
     },
     [handleFileSelection]
   );
+  
+  // Trigger native file picker synchronously on user gesture
+  const handleBrowseClick = useCallback(() => {
+    if (disabled) return;
+    fileInputRef.current?.click();
+  }, [disabled]);
 
   // Remove selected file
   const handleRemove = useCallback(() => {
     setSelectedFile(null);
     setMetadata(null);
     setError(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   }, []);
 
   // Format file size
@@ -244,22 +257,33 @@ export function AudioUploader({
             </p>
             <p className="text-sm text-muted-foreground mb-4">or click to browse</p>
 
-            <label htmlFor="audio-upload">
-              <Button variant="outline" disabled={disabled} asChild>
-                <span>
-                  <Upload className="h-4 w-4 mr-2" />
-                  Browse Files
-                </span>
-              </Button>
-              <input
-                id="audio-upload"
-                type="file"
-                accept=".mp3,.wav,.m4a,.mp4,.mov,.avi,.webm,.aac,.flac,audio/*,video/*"
-                onChange={handleInputChange}
-                disabled={disabled}
-                className="sr-only"
-              />
-            </label>
+            <div>
+              <div className="flex justify-center">
+                <input
+                  ref={fileInputRef}
+                  id={inputId}
+                  type="file"
+                  accept=".mp3,.wav,.m4a,.mp4,.mov,.avi,.webm,.aac,.flac,audio/*,video/*"
+                  onChange={handleInputChange}
+                  disabled={disabled}
+                  className="sr-only"
+                  aria-label="Select an audio file to upload"
+                />
+                <Button
+                  variant="outline"
+                  type="button"
+                  disabled={disabled}
+                  onClick={handleBrowseClick}
+                  className={cn(
+                    'inline-flex items-center gap-2',
+                    disabled && 'pointer-events-none'
+                  )}
+                >
+                  <Upload className="h-4 w-4" />
+                  <span>Browse Files</span>
+                </Button>
+              </div>
+            </div>
 
             <div className="mt-4 text-xs text-muted-foreground text-center space-y-1">
               <p>Supported: MP3, WAV, M4A, MP4, WEBM, AAC, FLAC</p>

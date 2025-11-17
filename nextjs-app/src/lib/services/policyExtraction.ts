@@ -29,26 +29,35 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB - absolute maximum
 /**
  * Check if file size is within safe processing limits
  *
- * Logs warnings for large files and throws errors for files exceeding maximum size.
- * This prevents out-of-memory errors in production environments.
+ * Validates file sizes to prevent both memory exhaustion and token limit overflow:
+ * - Files >50MB are rejected (hard limit for memory safety)
+ * - Files >10MB trigger warnings (recommend streaming for large files)
+ *
+ * This validation prevents out-of-memory errors and ensures documents
+ * are small enough to fit within GPT-4.1's context window after extraction.
  *
  * @param {Buffer} buffer - File buffer to validate
- * @throws {ServiceError} If file is too large
+ * @param {string} fileName - Original filename for error messages
+ * @throws {ServiceError} If file exceeds maximum size
  *
  * @example
  * ```typescript
- * validateFileSize(buffer); // Throws if buffer > 50MB
+ * validateFileSize(buffer, 'policy-manual.pdf'); // Throws if buffer > 50MB
  * ```
  */
-function validateFileSize(buffer: Buffer): void {
+function validateFileSize(buffer: Buffer, fileName: string = 'unknown'): void {
+  const sizeMB = buffer.length / 1024 / 1024;
+
+  // Hard limit: reject files larger than 50MB
   if (buffer.length > MAX_FILE_SIZE) {
     throw Errors.fileTooLarge(MAX_FILE_SIZE, buffer.length);
   }
 
+  // Soft warning: log for files >10MB that may cause memory pressure
   if (buffer.length > MAX_BUFFER_SIZE) {
     console.warn(
-      `[MEMORY_WARNING] Processing large file (${(buffer.length / 1024 / 1024).toFixed(2)}MB). ` +
-        `Consider implementing streaming for files >10MB.`
+      `[MEMORY_WARNING] Processing large file: ${fileName} (${sizeMB.toFixed(1)}MB). ` +
+        `Consider implementing streaming for files >10MB to reduce memory usage.`
     );
   }
 }
@@ -135,30 +144,39 @@ export class PolicyExtractionService {
     mimeType: string,
     fileName: string
   ): Promise<ExtractedContent> {
+    // Validate file extension before processing
+    const ext = fileName.toLowerCase().split('.').pop();
+    const supportedExtensions = ['pdf', 'docx', 'xlsx', 'pptx', 'txt', 'md'];
+
+    if (!ext || !supportedExtensions.includes(ext)) {
+      console.error('[POLICY_EXTRACTION_INVALID_FORMAT]', {
+        fileName,
+        extension: ext,
+        mimeType,
+      });
+      throw Errors.invalidInput(
+        'fileName',
+        `Unsupported file format: .${ext}. Supported: ${supportedExtensions.join(', ')}`
+      );
+    }
+
     const format = this.detectFileFormat(mimeType, fileName);
 
     switch (format) {
       case 'pdf':
-        return await this.extractFromPDF(buffer);
+        return await this.extractFromPDF(buffer, {}, fileName);
       case 'docx':
-        return await this.extractFromDOCX(buffer);
+        return await this.extractFromDOCX(buffer, {}, fileName);
       case 'xlsx':
-        return await this.extractFromXLSX(buffer);
+        return await this.extractFromXLSX(buffer, {}, fileName);
       case 'pptx':
-        return await this.extractFromPPTX(buffer);
+        return await this.extractFromPPTX(buffer, {}, fileName);
       case 'txt':
-        return await this.extractFromText(buffer);
+        return await this.extractFromText(buffer, false, fileName);
       case 'md':
-        return await this.extractFromText(buffer, true);
+        return await this.extractFromText(buffer, true, fileName);
       default:
-        throw Errors.unsupportedFormat(format, [
-          'pdf',
-          'docx',
-          'xlsx',
-          'pptx',
-          'txt',
-          'md',
-        ]);
+        throw Errors.unsupportedFormat(format, supportedExtensions);
     }
   }
 
@@ -183,11 +201,12 @@ export class PolicyExtractionService {
    */
   async extractFromPDF(
     buffer: Buffer,
-    options: PDFExtractionOptions = {}
+    options: PDFExtractionOptions = {},
+    fileName: string = 'document.pdf'
   ): Promise<ExtractedContent> {
     try {
       // Validate buffer size for memory safety
-      validateFileSize(buffer);
+      validateFileSize(buffer, fileName);
 
       // Dynamic import of pdf-parse (only works server-side)
       // pdf-parse exports a named 'pdf' function, not a default export
@@ -211,12 +230,24 @@ export class PolicyExtractionService {
         sectionCount: sections.length,
       };
 
+      console.log('[PDF_EXTRACTION_SUCCESS]', {
+        fileName,
+        pages: data.total,
+        characterCount: fullText.length,
+        sectionCount: sections.length,
+      });
+
       return {
         text: fullText,
         sections,
         metadata,
       };
     } catch (error) {
+      console.error('[PDF_EXTRACTION_FAILED]', {
+        fileName,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        bufferSize: buffer.length,
+      });
       throw Errors.processingFailed(
         'PDF extraction',
         error instanceof Error ? error.message : 'Unknown error'
@@ -245,11 +276,12 @@ export class PolicyExtractionService {
    */
   async extractFromDOCX(
     buffer: Buffer,
-    options: DOCXExtractionOptions = {}
+    options: DOCXExtractionOptions = {},
+    fileName: string = 'document.docx'
   ): Promise<ExtractedContent> {
     try {
       // Validate buffer size for memory safety
-      validateFileSize(buffer);
+      validateFileSize(buffer, fileName);
 
       // Extract raw text
       const textResult = await mammoth.extractRawText({ buffer });
@@ -270,12 +302,23 @@ export class PolicyExtractionService {
         sectionCount: sections.length,
       };
 
+      console.log('[DOCX_EXTRACTION_SUCCESS]', {
+        fileName,
+        characterCount: fullText.length,
+        sectionCount: sections.length,
+      });
+
       return {
         text: fullText,
         sections: sections.length > 0 ? sections : [this.createDefaultSection(fullText)],
         metadata,
       };
     } catch (error) {
+      console.error('[DOCX_EXTRACTION_FAILED]', {
+        fileName,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        bufferSize: buffer.length,
+      });
       throw Errors.processingFailed(
         'DOCX extraction',
         error instanceof Error ? error.message : 'Unknown error'
@@ -304,11 +347,12 @@ export class PolicyExtractionService {
    */
   async extractFromXLSX(
     buffer: Buffer,
-    options: XLSXExtractionOptions = {}
+    options: XLSXExtractionOptions = {},
+    fileName: string = 'document.xlsx'
   ): Promise<ExtractedContent> {
     try {
       // Validate buffer size for memory safety
-      validateFileSize(buffer);
+      validateFileSize(buffer, fileName);
 
       const workbook = XLSX.read(buffer, { type: 'buffer' });
       const sections: DocumentSection[] = [];
@@ -343,12 +387,25 @@ export class PolicyExtractionService {
         isScorecard: sections.some((s) => s.title.includes('Scorecard')),
       };
 
+      console.log('[XLSX_EXTRACTION_SUCCESS]', {
+        fileName,
+        sheetCount: workbook.SheetNames.length,
+        characterCount: fullText.length,
+        sectionCount: sections.length,
+        isScorecard: metadata.isScorecard,
+      });
+
       return {
         text: fullText.trim(),
         sections,
         metadata,
       };
     } catch (error) {
+      console.error('[XLSX_EXTRACTION_FAILED]', {
+        fileName,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        bufferSize: buffer.length,
+      });
       throw Errors.processingFailed(
         'XLSX extraction',
         error instanceof Error ? error.message : 'Unknown error'
@@ -377,11 +434,12 @@ export class PolicyExtractionService {
    */
   async extractFromPPTX(
     buffer: Buffer,
-    options: PPTXExtractionOptions = {}
+    options: PPTXExtractionOptions = {},
+    fileName: string = 'document.pptx'
   ): Promise<ExtractedContent> {
     try {
       // Validate buffer size for memory safety
-      validateFileSize(buffer);
+      validateFileSize(buffer, fileName);
 
       // Use officeparser for PPTX extraction
       const text = await new Promise<string>((resolve, reject) => {
@@ -433,10 +491,11 @@ export class PolicyExtractionService {
    */
   async extractFromText(
     buffer: Buffer,
-    isMarkdown: boolean = false
+    isMarkdown: boolean = false,
+    fileName: string = 'document.txt'
   ): Promise<ExtractedContent> {
     // Validate buffer size for memory safety
-    validateFileSize(buffer);
+    validateFileSize(buffer, fileName);
 
     const text = buffer.toString('utf-8');
 

@@ -54,7 +54,7 @@ REQUIREMENTS:
     temperature: 0.1, // Low for consistency
     max_output_tokens: 8000,
     text: {
-      format: zodTextFormat(GeneratedTemplateSchema, 'generated_template'),
+      format: zodTextFormat(GeneratedTemplateSchema as any, 'generated_template'),
     },
   });
 
@@ -142,7 +142,7 @@ ${fullPolicyText}`;
     temperature: 0.1,
     max_output_tokens: 8000,
     text: {
-      format: zodTextFormat(GeneratedTemplateSchema, 'generated_template'),
+      format: zodTextFormat(GeneratedTemplateSchema as any, 'generated_template'),
     },
   });
 
@@ -172,7 +172,7 @@ export async function generateTemplateWithValidation(
         },
       ],
       text: {
-        format: zodTextFormat(GeneratedTemplateSchema, 'generated_template'),
+        format: zodTextFormat(GeneratedTemplateSchema as any, 'generated_template'),
       },
     });
 
@@ -224,7 +224,7 @@ export function validateExternalTemplate(data: unknown): {
 
   return {
     success: false,
-    errors: result.error.errors.map((err) => `${err.path.join('.')}: ${err.message}`),
+    errors: result.error.issues.map((err) => `${err.path.join('.')}: ${err.message}`),
   };
 }
 
@@ -250,16 +250,16 @@ export async function streamTemplateGeneration(
       },
     ],
     text: {
-      format: zodTextFormat(GeneratedTemplateSchema, 'generated_template'),
+      format: zodTextFormat(GeneratedTemplateSchema as any, 'generated_template'),
     },
   });
 
   // Handle streaming events
   stream
-    .on('response.output_text.delta', (event) => {
+    .on('response.output_text.delta', (event: any) => {
       process.stdout.write(event.delta);
     })
-    .on('response.error', (event) => {
+    .on('response.error', (event: any) => {
       console.error('Stream error:', event.error);
     })
     .on('response.completed', () => {

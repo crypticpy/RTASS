@@ -20,6 +20,7 @@ import { getOpenAIClient, withRateLimit, trackTokenUsage } from './utils/openai'
 import { policyExtractionService } from './policyExtraction';
 import { templateService } from './templateService';
 import { Errors } from './utils/errorHandlers';
+import { validateContent } from '@/lib/utils/validators';
 import {
   DocumentAnalysisSchema,
   CategoryDiscoverySchema,
@@ -32,6 +33,7 @@ import {
   type CriteriaGeneration,
 } from '@/lib/openai/schemas/template-generation';
 import { validateWithSchema } from '@/lib/openai/schemas/utils';
+import { extractResponseText, validateTokenLimit } from '@/lib/openai/utils';
 import type {
   DocumentAnalysis,
   GeneratedTemplate,
@@ -42,6 +44,21 @@ import type {
   ComplianceCriterion,
   ExtractedContent,
 } from '@/lib/types';
+import {
+  logTemplateWorkflowStart,
+  logTemplateWorkflowStep,
+  logTemplateWorkflowComplete,
+  logTemplateWorkflowError,
+  logCategoryDiscovery,
+  logCriteriaGeneration,
+  logWeightNormalization,
+  logTemplateSchemaValidation,
+  logTemplateValidation,
+  logAutoFix,
+  logSuggestionGeneration,
+  generateJobId,
+  logger,
+} from '@/lib/logging';
 
 /**
  * Constants
@@ -196,6 +213,12 @@ export class TemplateGenerationService {
    *
    * Useful for generating templates without saving to database first.
    *
+   * REFACTORED: Uses fault-isolated parallel processes for resilience:
+   * - Category discovery runs independently
+   * - Criteria generation runs in parallel with error isolation
+   * - Scoring rubrics and prompts are generated in parallel (optional)
+   * - One phase failing doesn't crash the entire generation
+   *
    * @param {ExtractedContent} content - Extracted document content
    * @param {TemplateGenerationOptions} options - Generation options
    * @returns {Promise<GeneratedTemplate>} Generated template
@@ -206,88 +229,364 @@ export class TemplateGenerationService {
   ): Promise<GeneratedTemplate> {
     const startTime = Date.now();
     const processingLog: string[] = [];
+    const jobId = generateJobId();
+    const errors: Array<{ phase: string; category?: string; error: string }> = [];
 
     try {
-      processingLog.push('Starting template generation (multi-turn) from extracted content');
+      // Log workflow start
+      logTemplateWorkflowStart(jobId, 1, options as Record<string, unknown>);
+      processingLog.push(`Starting template generation (multi-turn) from extracted content [jobId: ${jobId}]`);
+
+      // Validate content before processing (fail fast on empty content)
+      processingLog.push('Validating policy document content...');
+      const validatedText = validateContent(
+        content.text,
+        100, // Minimum 100 characters for meaningful policy analysis
+        'policyDocument.text'
+      );
+      processingLog.push(`✓ Content validated (${validatedText.length} characters)`);
+
+      // Validate content won't exceed GPT-4.1 context window (120k tokens)
+      // This prevents API failures mid-generation and provides clear feedback
+      processingLog.push('Validating token count against GPT-4.1 context limit...');
+      validateTokenLimit(validatedText, 120000, 'policyDocument.text');
+      processingLog.push('✓ Token count within acceptable limits');
 
       // Full-context multi-turn flow: always send complete text each turn
-      const fullText = content.text;
+      const fullText = validatedText;
 
-      // Step 1: Discover categories (soft cap ~15)
-      processingLog.push('Step 1: Discovering categories');
-      const discovered = await this.discoverCategoriesFullContext(fullText, options);
-      processingLog.push(`Discovered ${discovered.length} categories`);
+      // ========================================================================
+      // PHASE 1: Category Discovery (fault-isolated)
+      // ========================================================================
+      logTemplateWorkflowStep(jobId, 'discover-categories', 'Starting category discovery');
+      processingLog.push('Phase 1: Discovering categories');
 
-      // Step 2: Generate criteria per category (soft cap ~10 each)
-      processingLog.push('Step 2: Generating criteria per category');
-      const criteriaMap: Record<string, ComplianceCriterion[]> = {};
-      // Run sequentially to keep token usage predictable; can be parallelized with rate limit if needed
-      for (const cat of discovered) {
-        const crit = await this.generateCriteriaForCategoryFullContext(fullText, cat.name, options);
-        criteriaMap[cat.name] = crit;
+      let discovered: Array<{
+        name: string;
+        description: string;
+        weight: number;
+        regulatoryReferences: string[];
+      }> = [];
+
+      try {
+        discovered = await this.discoverCategoriesFullContext(fullText, options);
+        processingLog.push(`✓ Discovered ${discovered.length} categories`);
+
+        // Log category discovery completion
+        logCategoryDiscovery(
+          jobId,
+          discovered.map((c) => c.name),
+          0.9,
+          { documentLength: fullText.length }
+        );
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        errors.push({ phase: 'category-discovery', error: errorMsg });
+        processingLog.push(`✗ Category discovery failed: ${errorMsg}`);
+
+        logTemplateWorkflowError(jobId, 'discover-categories',
+          error instanceof Error ? error : new Error(String(error)));
+
+        throw Errors.processingFailed(
+          'Category discovery',
+          `Failed to discover categories: ${errorMsg}`
+        );
       }
-      processingLog.push('Criteria generation complete');
 
-      // Step 3: Propose weights (category-level)
-      processingLog.push('Step 3: Proposing weights');
-      const weightedCategories = this.applyWeights(discovered, criteriaMap);
+      // ========================================================================
+      // PHASE 2: Criteria Generation (parallel, fault-isolated)
+      // ========================================================================
+      logTemplateWorkflowStep(jobId, 'generate-criteria', 'Starting criteria generation (parallel)');
+      processingLog.push('Phase 2: Generating criteria per category (parallel)');
 
-      // Build structure
-      const templateStructure = { categories: weightedCategories };
+      const criteriaMap: Record<string, ComplianceCriterion[]> = {};
 
-      // Optional enhancement step
-      let enhancedCategories = templateStructure.categories;
+      // Generate criteria in parallel with error isolation
+      const criteriaPromises = discovered.map(async (cat, index) => {
+        const progress = `${index + 1}/${discovered.length}`;
+
+        try {
+          logger.debug('Generating criteria for category', {
+            component: 'template-generation',
+            operation: 'generate-criteria',
+            jobId,
+            categoryName: cat.name,
+            progress,
+          });
+
+          const crit = await this.generateCriteriaForCategoryFullContext(
+            fullText,
+            cat.name,
+            options
+          );
+
+          // Log criteria generation for this category
+          logCriteriaGeneration(jobId, cat.name, crit.length, progress);
+
+          processingLog.push(`✓ Generated ${crit.length} criteria for "${cat.name}"`);
+
+          return { categoryName: cat.name, criteria: crit, success: true };
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+          errors.push({
+            phase: 'criteria-generation',
+            category: cat.name,
+            error: errorMsg
+          });
+
+          processingLog.push(`✗ Failed to generate criteria for "${cat.name}": ${errorMsg}`);
+
+          logger.error('Criteria generation failed for category', {
+            component: 'template-generation',
+            operation: 'generate-criteria',
+            jobId,
+            categoryName: cat.name,
+            error: error instanceof Error ? error : new Error(String(error)),
+          });
+
+          // Return empty criteria instead of failing entire process
+          return { categoryName: cat.name, criteria: [], success: false };
+        }
+      });
+
+      // Wait for all criteria generation to complete
+      const criteriaResults = await Promise.all(criteriaPromises);
+
+      // Populate criteria map (including failed categories with empty arrays)
+      criteriaResults.forEach((result) => {
+        criteriaMap[result.categoryName] = result.criteria;
+      });
+
+      const successfulCategories = criteriaResults.filter(r => r.success).length;
+      const failedCategories = criteriaResults.filter(r => !r.success).length;
+
+      processingLog.push(
+        `Criteria generation complete: ${successfulCategories} successful, ${failedCategories} failed`
+      );
+
+      // Filter out categories with no criteria (completely failed)
+      const validDiscovered = discovered.filter(d => {
+        const hasCriteria = criteriaMap[d.name] && criteriaMap[d.name].length > 0;
+        if (!hasCriteria) {
+          processingLog.push(`⚠ Skipping category "${d.name}" (no criteria generated)`);
+        }
+        return hasCriteria;
+      });
+
+      if (validDiscovered.length === 0) {
+        throw Errors.processingFailed(
+          'Criteria generation',
+          'All categories failed to generate criteria. No valid template can be created.'
+        );
+      }
+
+      // ========================================================================
+      // PHASE 3: Weight Normalization (fault-isolated)
+      // ========================================================================
+      logTemplateWorkflowStep(jobId, 'normalize-weights', 'Normalizing weights');
+      processingLog.push('Phase 3: Normalizing weights');
+
+      let weightedCategories: ComplianceCategory[] = [];
+
+      try {
+        weightedCategories = this.applyWeights(validDiscovered, criteriaMap);
+
+        // Log weight normalization
+        const totalCriteria = Object.values(criteriaMap).reduce((sum, crit) => sum + crit.length, 0);
+        logWeightNormalization(jobId, weightedCategories.length, totalCriteria);
+
+        processingLog.push(`✓ Weights normalized for ${weightedCategories.length} categories`);
+
+        // Validate data integrity after normalization
+        processingLog.push('Validating data integrity...');
+        this.validateDataIntegrity(weightedCategories, jobId);
+        processingLog.push('✓ Data integrity validation passed');
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        errors.push({ phase: 'weight-normalization', error: errorMsg });
+        processingLog.push(`✗ Weight normalization failed: ${errorMsg}`);
+
+        throw Errors.processingFailed('Weight normalization', errorMsg);
+      }
+
+      // ========================================================================
+      // PHASE 4: Enhancement (parallel, fault-isolated, optional)
+      // ========================================================================
+      let enhancedCategories = weightedCategories;
+
       if (options.generateRubrics) {
-        enhancedCategories = await this.enhanceCriteria(templateStructure.categories, {
-          categories: discovered.map((d) => ({
-            name: d.name,
-            description: d.description,
-            weight: d.weight ?? 1 / discovered.length,
-            regulatoryReferences: d.regulatoryReferences || [],
-            criteria: criteriaMap[d.name] || [],
+        logTemplateWorkflowStep(jobId, 'enhance-criteria', 'Enhancing criteria with scoring rubrics (parallel)');
+        processingLog.push('Phase 4: Enhancing criteria with scoring rubrics (parallel)');
+
+        try {
+          enhancedCategories = await this.enhanceCriteria(weightedCategories, {
+            categories: validDiscovered.map((d) => ({
+              name: d.name,
+              description: d.description,
+              weight: d.weight ?? 1 / validDiscovered.length,
+              regulatoryReferences: d.regulatoryReferences || [],
+              criteria: criteriaMap[d.name] || [],
+            })),
+            emergencyProcedures: [],
+            regulatoryFramework: [],
+            completeness: 1,
+            confidence: 0.9,
+          });
+
+          processingLog.push(`✓ Criteria enhanced with scoring rubrics`);
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+          errors.push({ phase: 'criteria-enhancement', error: errorMsg });
+          processingLog.push(`✗ Criteria enhancement failed: ${errorMsg}`);
+
+          logger.warn('Criteria enhancement failed, continuing with unenhanced criteria', {
+            component: 'template-generation',
+            operation: 'enhance-criteria',
+            jobId,
+            error: error instanceof Error ? error : new Error(String(error)),
+          });
+
+          // Continue with unenhanced categories instead of failing
+          enhancedCategories = weightedCategories;
+        }
+      } else {
+        processingLog.push('Phase 4: Skipped (generateRubrics not enabled)');
+      }
+
+      // ========================================================================
+      // PHASE 5: Validation and Auto-Fix (fault-isolated)
+      // ========================================================================
+      logTemplateWorkflowStep(jobId, 'validate-structure', 'Validating template structure');
+      processingLog.push('Phase 5: Validating template structure');
+
+      try {
+        const validation = templateService.validateTemplateStructure(enhancedCategories);
+
+        // Log validation result
+        logTemplateValidation(jobId, validation.valid, validation.errors);
+
+        if (!validation.valid) {
+          logger.warn('Template validation failed, attempting auto-fix', {
+            component: 'template-generation',
+            operation: 'auto-fix',
+            jobId,
+            validationErrors: validation.errors,
+          });
+
+          processingLog.push(`⚠ Validation failed: ${validation.errors.join(', ')}`);
+
+          const fixed = this.autoFixTemplate(enhancedCategories);
+          const revalidation = templateService.validateTemplateStructure(fixed);
+
+          // Log auto-fix result
+          logAutoFix(jobId, validation.errors.length, revalidation.valid, {
+            fixedIssues: validation.errors,
+          });
+
+          if (!revalidation.valid) {
+            logTemplateWorkflowError(jobId, 'validate-structure', new Error('Auto-fix failed'));
+            throw Errors.processingFailed(
+              'Template auto-fix',
+              `Auto-fix failed to resolve validation issues: ${revalidation.errors.join(', ')}`
+            );
+          }
+
+          processingLog.push('✓ Template auto-corrected and revalidated successfully');
+          enhancedCategories = fixed;
+        } else {
+          processingLog.push('✓ Template validation passed');
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        errors.push({ phase: 'validation', error: errorMsg });
+        processingLog.push(`✗ Validation failed: ${errorMsg}`);
+
+        throw error; // Re-throw validation errors as they're critical
+      }
+
+      // ========================================================================
+      // PHASE 6: Suggestions (fault-isolated)
+      // ========================================================================
+      logTemplateWorkflowStep(jobId, 'generate-suggestions', 'Generating improvement suggestions');
+      processingLog.push('Phase 6: Generating improvement suggestions');
+
+      let suggestions: TemplateSuggestion[] = [];
+
+      try {
+        suggestions = this.generateSuggestions(enhancedCategories, {
+          categories: enhancedCategories.map((c) => ({
+            name: c.name,
+            description: c.description,
+            weight: c.weight,
+            regulatoryReferences: c.regulatoryReferences || [],
+            criteria: c.criteria,
           })),
           emergencyProcedures: [],
           regulatoryFramework: [],
           completeness: 1,
           confidence: 0.9,
         });
-        processingLog.push('Criteria enhanced with scoring rubrics');
+
+        // Log suggestion generation
+        logSuggestionGeneration(
+          jobId,
+          suggestions.length,
+          suggestions.map((s) => s.type)
+        );
+
+        processingLog.push(`✓ Generated ${suggestions.length} improvement suggestions`);
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        errors.push({ phase: 'suggestion-generation', error: errorMsg });
+        processingLog.push(`✗ Suggestion generation failed: ${errorMsg}`);
+
+        logger.warn('Suggestion generation failed, continuing without suggestions', {
+          component: 'template-generation',
+          operation: 'generate-suggestions',
+          jobId,
+          error: error instanceof Error ? error : new Error(String(error)),
+        });
+
+        // Continue without suggestions instead of failing
+        suggestions = [];
       }
 
-      // Validate and fix
-      const validation = templateService.validateTemplateStructure(enhancedCategories);
-      if (!validation.valid) {
-        const fixed = this.autoFixTemplate(enhancedCategories);
-        const revalidation = templateService.validateTemplateStructure(fixed);
-        if (!revalidation.valid) {
-          throw Errors.processingFailed(
-            'Template auto-fix',
-            `Auto-fix failed to resolve validation issues: ${revalidation.errors.join(', ')}`
-          );
-        }
-        processingLog.push('Template auto-corrected and revalidated successfully');
-        // eslint-disable-next-line no-param-reassign
-        enhancedCategories = fixed;
+      // ========================================================================
+      // FINALIZE
+      // ========================================================================
+      const confidence = Math.max(0.5, 0.9 - (errors.length * 0.1)); // Reduce confidence for errors
+      const duration = Date.now() - startTime;
+
+      // Log workflow completion
+      logTemplateWorkflowComplete(
+        jobId,
+        {
+          categoryCount: enhancedCategories.length,
+          totalCriteria: Object.values(criteriaMap).reduce((sum, crit) => sum + crit.length, 0),
+          confidence,
+        },
+        duration
+      );
+
+      // Log errors separately if any
+      if (errors.length > 0) {
+        logger.warn('Template generation completed with non-critical errors', {
+          component: 'template-generation',
+          operation: 'workflow-complete',
+          jobId,
+          errorCount: errors.length,
+          errors: errors.map((e) => `${e.phase}${e.category ? ` (${e.category})` : ''}: ${e.error}`),
+        });
+      }
+
+      if (errors.length > 0) {
+        processingLog.push(
+          `⚠ Template generated with ${errors.length} non-critical error(s). Confidence: ${(confidence * 100).toFixed(0)}%`
+        );
       } else {
-        processingLog.push('Template validation passed');
+        processingLog.push(`✓ Template generation complete. Confidence: ${(confidence * 100).toFixed(0)}%`);
       }
 
-      // Suggestions & confidence
-      const suggestions = this.generateSuggestions(enhancedCategories, {
-        categories: enhancedCategories.map((c) => ({
-          name: c.name,
-          description: c.description,
-          weight: c.weight,
-          regulatoryReferences: c.regulatoryReferences || [],
-          criteria: c.criteria,
-        })),
-        emergencyProcedures: [],
-        regulatoryFramework: [],
-        completeness: 1,
-        confidence: 0.9,
-      });
-
-      const confidence = 0.9;
       const metadata: TemplateGenerationMetadata = {
         generatedAt: new Date().toISOString(),
         aiModel: 'gpt-4.1',  // ⚠️ DO NOT change this model
@@ -299,7 +598,7 @@ export class TemplateGenerationService {
       return {
         template: {
           name: options.templateName || 'AI-Generated Compliance Template',
-          description: `Generated from policy document (${enhancedCategories.length} categories)`,
+          description: `Generated from policy document (${enhancedCategories.length} categories, ${failedCategories > 0 ? `${failedCategories} categories failed, ` : ''}confidence: ${(confidence * 100).toFixed(0)}%)`,
           version: '1.0',
           categories: enhancedCategories,
           metadata,
@@ -310,6 +609,22 @@ export class TemplateGenerationService {
         suggestions,
       };
     } catch (error) {
+      // Log workflow error
+      logTemplateWorkflowError(
+        jobId,
+        'generate-criteria', // General error - closest matching step
+        error instanceof Error ? error : new Error(String(error))
+      );
+
+      logger.error('Template generation from content failed', {
+        component: 'template-generation',
+        operation: 'generate-from-content',
+        error: error instanceof Error ? error : new Error(String(error)),
+        jobId,
+        duration: Date.now() - startTime,
+        errors: errors.length > 0 ? errors : undefined,
+      });
+
       throw Errors.processingFailed(
         'Template generation from content',
         error instanceof Error ? error.message : 'Unknown error'
@@ -416,12 +731,18 @@ Return this exact JSON structure:
 
       // Track token usage
       if (response.usage) {
+        const inputTokens =
+          response.usage.input_tokens ?? response.usage.prompt_tokens ?? 0;
+        const outputTokens =
+          response.usage.output_tokens ?? response.usage.completion_tokens ?? 0;
+        const totalTokens = response.usage.total_tokens ?? inputTokens + outputTokens;
+
         await trackTokenUsage(
           'gpt-4.1',  // ⚠️ DO NOT change this model
           {
-            promptTokens: response.usage.input_tokens,
-            completionTokens: response.usage.output_tokens,
-            totalTokens: response.usage.total_tokens,
+            promptTokens: inputTokens,
+            completionTokens: outputTokens,
+            totalTokens,
           },
           'policy_analysis'
         );
@@ -488,8 +809,8 @@ Return this exact JSON structure:
     Array<{
       name: string;
       description: string;
-      weight?: number;
-      regulatoryReferences?: string[];
+      weight: number;
+      regulatoryReferences: string[];
     }>
   > {
     const client = getOpenAIClient();
@@ -585,13 +906,13 @@ ${fullText}`;
     discovered: Array<{
       name: string;
       description: string;
-      weight?: number;
-      regulatoryReferences?: string[];
+      weight: number;
+      regulatoryReferences: string[];
     }>,
     criteriaMap: Record<string, ComplianceCriterion[]>
   ): ComplianceCategory[] {
     // Category weights
-    const rawWeights = discovered.map((c) => c.weight ?? 1 / discovered.length);
+    const rawWeights = discovered.map((c) => c.weight);
     const sumCat = rawWeights.reduce((a, b) => a + b, 0) || 1;
 
     return discovered.map((c, i) => {
@@ -604,9 +925,161 @@ ${fullText}`;
         name: c.name,
         description: c.description,
         weight: rawWeights[i] / sumCat,
-        regulatoryReferences: c.regulatoryReferences || [],
+        regulatoryReferences: c.regulatoryReferences,
         criteria: normCrit,
       } as ComplianceCategory;
+    });
+  }
+
+  /**
+   * Validate data integrity of generated template
+   *
+   * Ensures:
+   * - Category weights sum to 1.0 (±0.01 tolerance)
+   * - Individual category weights are in valid range (0-1)
+   * - Criterion weights within each category sum to 1.0 (±0.01 tolerance)
+   * - Individual criterion weights are in valid range (0-1)
+   * - All criterion IDs are unique across the entire template
+   *
+   * @private
+   * @param {ComplianceCategory[]} categories - Categories to validate
+   * @param {string} jobId - Job ID for logging
+   * @throws {ServiceError} If validation fails
+   */
+  private validateDataIntegrity(
+    categories: ComplianceCategory[],
+    jobId: string
+  ): void {
+    // Validate category weights sum to 1.0
+    const categoryWeightSum = categories.reduce((sum, c) => sum + c.weight, 0);
+
+    if (Math.abs(categoryWeightSum - 1.0) > 0.01) {
+      logger.error('Category weights do not sum to 1.0', {
+        component: 'template-generation',
+        operation: 'validate-data-integrity',
+        jobId,
+        weightSum: categoryWeightSum,
+        categories: categories.map(c => ({ name: c.name, weight: c.weight })),
+      });
+
+      throw Errors.invalidInput(
+        'categories',
+        `Category weights must sum to 1.0 (got ${categoryWeightSum.toFixed(3)}). Please regenerate template.`
+      );
+    }
+
+    // Validate individual category weights are in valid range
+    for (const category of categories) {
+      if (category.weight < 0 || category.weight > 1) {
+        logger.error('Invalid category weight', {
+          component: 'template-generation',
+          operation: 'validate-data-integrity',
+          jobId,
+          categoryName: category.name,
+          weight: category.weight,
+        });
+
+        throw Errors.invalidInput(
+          'category.weight',
+          `Weight for "${category.name}" must be between 0 and 1 (got ${category.weight})`
+        );
+      }
+    }
+
+    // Collect all criterion IDs for uniqueness check
+    const criterionIds: string[] = [];
+
+    // Validate criteria within each category
+    for (const category of categories) {
+      // Check criteria exist
+      if (!category.criteria || category.criteria.length === 0) {
+        logger.error('Category has no criteria', {
+          component: 'template-generation',
+          operation: 'validate-data-integrity',
+          jobId,
+          categoryName: category.name,
+        });
+
+        throw Errors.invalidInput(
+          'category.criteria',
+          `Category "${category.name}" must have at least one criterion`
+        );
+      }
+
+      // Validate criterion weights sum to 1.0 within category
+      const criterionWeightSum = category.criteria.reduce((sum, cr) => sum + cr.weight, 0);
+
+      if (Math.abs(criterionWeightSum - 1.0) > 0.01) {
+        logger.error('Criterion weights do not sum to 1.0 within category', {
+          component: 'template-generation',
+          operation: 'validate-data-integrity',
+          jobId,
+          categoryName: category.name,
+          weightSum: criterionWeightSum,
+          criteria: category.criteria.map(cr => ({ id: cr.id, weight: cr.weight })),
+        });
+
+        throw Errors.invalidInput(
+          'criteria',
+          `Criterion weights in category "${category.name}" must sum to 1.0 (got ${criterionWeightSum.toFixed(3)})`
+        );
+      }
+
+      // Validate individual criterion weights and collect IDs
+      for (const criterion of category.criteria) {
+        // Check weight is in valid range
+        if (criterion.weight < 0 || criterion.weight > 1) {
+          logger.error('Invalid criterion weight', {
+            component: 'template-generation',
+            operation: 'validate-data-integrity',
+            jobId,
+            categoryName: category.name,
+            criterionId: criterion.id,
+            weight: criterion.weight,
+          });
+
+          throw Errors.invalidInput(
+            'criterion.weight',
+            `Weight for criterion "${criterion.id}" in category "${category.name}" must be between 0 and 1 (got ${criterion.weight})`
+          );
+        }
+
+        // Collect criterion ID
+        if (criterion.id) {
+          criterionIds.push(criterion.id);
+        }
+      }
+    }
+
+    // Validate criterion ID uniqueness
+    const duplicates = criterionIds.filter(
+      (id, index) => criterionIds.indexOf(id) !== index
+    );
+
+    if (duplicates.length > 0) {
+      const uniqueDuplicates = [...new Set(duplicates)];
+
+      logger.error('Duplicate criterion IDs detected', {
+        component: 'template-generation',
+        operation: 'validate-data-integrity',
+        jobId,
+        duplicateIds: uniqueDuplicates,
+        totalCriteria: criterionIds.length,
+      });
+
+      throw Errors.invalidInput(
+        'criteria',
+        `Duplicate criterion IDs found: ${uniqueDuplicates.join(', ')}. Each criterion must have a unique ID.`
+      );
+    }
+
+    logger.debug('Data integrity validation passed', {
+      component: 'template-generation',
+      operation: 'validate-data-integrity',
+      jobId,
+      categoryCount: categories.length,
+      totalCriteria: criterionIds.length,
+      categoryWeightSum,
     });
   }
 
@@ -735,91 +1208,13 @@ ${fullText}`;
         response.error.message || 'Unknown API error'
       );
     }
-
-    const candidates: string[] = [];
-
-    // Try output_text field (common in responses.create())
-    if (typeof response?.output_text === 'string') {
-      candidates.push(response.output_text);
+    try {
+      return extractResponseText(response, context);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Invalid OpenAI response';
+      throw Errors.processingFailed(context, message);
     }
-
-    // Try output array (structured outputs format)
-    if (Array.isArray(response?.output)) {
-      const aggregated = response.output
-        .map((item: any) => {
-          if (!item) {
-            return '';
-          }
-
-          if (typeof item === 'string') {
-            return item;
-          }
-
-          if (item.type === 'output_text') {
-            if (typeof item?.text?.value === 'string') {
-              return item.text.value;
-            }
-
-            if (typeof item?.text === 'string') {
-              return item.text;
-            }
-          }
-
-          if (Array.isArray(item.content)) {
-            return item.content
-              .map((contentItem: any) => {
-                if (!contentItem) {
-                  return '';
-                }
-
-                if (typeof contentItem === 'string') {
-                  return contentItem;
-                }
-
-                if (contentItem.type === 'output_text') {
-                  if (typeof contentItem?.text?.value === 'string') {
-                    return contentItem.text.value;
-                  }
-
-                  if (typeof contentItem?.text === 'string') {
-                    return contentItem.text;
-                  }
-                }
-
-                if (contentItem.type === 'text' && typeof contentItem?.text === 'string') {
-                  return contentItem.text;
-                }
-
-                return '';
-              })
-              .join('');
-          }
-
-          return '';
-        })
-        .join('');
-
-      if (aggregated) {
-        candidates.push(aggregated);
-      }
-    }
-
-    // Find first non-empty candidate
-    const content = candidates
-      .map((candidate) => candidate?.trim())
-      .find((candidate) => candidate);
-
-    if (!content) {
-      throw Errors.processingFailed(
-        context,
-        'No textual response returned by GPT-4.1. Response may be empty or in unexpected format.'
-      );
-    }
-
-    // Clean up markdown JSON code blocks if present
-    const cleaned = content.replace(/^```json\s*\n?/m, '').replace(/\n?```\s*$/m, '');
-
-    return cleaned;
   }
 
   /**

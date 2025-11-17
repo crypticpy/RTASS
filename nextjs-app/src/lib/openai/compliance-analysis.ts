@@ -13,6 +13,7 @@ import {
   validateResponseFields,
   estimateTokens,
   logAPICall,
+  extractResponseText,
 } from './utils';
 import { TemplateCategory, TemplateCriterion } from './template-generation';
 
@@ -247,27 +248,21 @@ export async function analyzeCategory(
 
     // Call GPT-4 with retry logic
     const completion = await retryWithBackoff(async () => {
-      return await openai.chat.completions.create({
+      return await openai.responses.create({
         model,
-        messages: [
-          {
-            role: 'system',
-            content: COMPLIANCE_ANALYSIS_SYSTEM_PROMPT,
-          },
-          {
-            role: 'user',
-            content: userPrompt,
-          },
+        input: [
+          { role: 'system', content: COMPLIANCE_ANALYSIS_SYSTEM_PROMPT },
+          { role: 'user', content: userPrompt },
         ],
-        temperature: options.temperature ?? 0.3, // Low temperature for consistency
+        temperature: options.temperature ?? 0.3,
         response_format: { type: 'json_object' },
       });
     });
 
-    const responseText = completion.choices[0]?.message?.content;
-    if (!responseText) {
-      throw new AnalysisError('Empty response from GPT-4');
-    }
+    const responseText = extractResponseText(
+      completion,
+      'Compliance category analysis'
+    );
 
     // Parse JSON response
     const parsed = parseJSONResponse<CategoryAnalysisResult>(responseText);
@@ -283,8 +278,10 @@ export async function analyzeCategory(
     const result = validateAndTransformAnalysis(parsed, category);
 
     // Log API call
-    const outputTokens = estimateTokens(responseText);
-    logAPICall('compliance-analysis', model, inputTokens, outputTokens);
+    const inputTokenUsage = completion.usage?.input_tokens ?? inputTokens;
+    const outputTokens =
+      completion.usage?.output_tokens ?? estimateTokens(responseText);
+    logAPICall('compliance-analysis', model, inputTokenUsage, outputTokens);
 
     return result;
   } catch (error) {
@@ -401,26 +398,23 @@ Do NOT use JSON format - write plain text paragraphs.`;
 
     // Call GPT-4
     const completion = await retryWithBackoff(async () => {
-      return await openai.chat.completions.create({
+      return await openai.responses.create({
         model,
-        messages: [
+        input: [
           {
             role: 'system',
             content: 'You are a professional fire service compliance auditor.',
           },
-          {
-            role: 'user',
-            content: prompt,
-          },
+          { role: 'user', content: prompt },
         ],
         temperature: 0.5,
       });
     });
 
-    const narrative = completion.choices[0]?.message?.content;
-    if (!narrative) {
-      throw new AnalysisError('Failed to generate narrative summary');
-    }
+    const narrative = extractResponseText(
+      completion,
+      'Compliance audit narrative generation'
+    );
 
     return narrative.trim();
   } catch (error) {

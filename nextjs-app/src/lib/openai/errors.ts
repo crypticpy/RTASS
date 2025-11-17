@@ -17,12 +17,13 @@ export class OpenAIError extends Error {
 }
 
 /**
- * Error thrown when OpenAI API rate limits are exceeded
+ * Error thrown when OpenAI API rate limits are exceeded (429)
  */
 export class RateLimitError extends OpenAIError {
   constructor(
     message: string,
     public readonly retryAfter?: number,
+    public readonly requestId?: string,
     cause?: unknown
   ) {
     super(message, cause);
@@ -73,5 +74,36 @@ export class AnalysisError extends OpenAIError {
     super(message, cause);
     this.name = 'AnalysisError';
     Object.setPrototypeOf(this, AnalysisError.prototype);
+  }
+}
+
+/**
+ * Error thrown when input content exceeds model's context length limit
+ */
+export class ContextLengthExceededError extends OpenAIError {
+  constructor(
+    message: string,
+    public readonly maxTokens?: number,
+    public readonly actualTokens?: number,
+    cause?: unknown
+  ) {
+    super(message, cause);
+    this.name = 'ContextLengthExceededError';
+    Object.setPrototypeOf(this, ContextLengthExceededError.prototype);
+  }
+}
+
+/**
+ * Error thrown when OpenAI API service is temporarily unavailable (503)
+ */
+export class ServiceUnavailableError extends OpenAIError {
+  constructor(
+    message: string,
+    public readonly retryAfter?: number,
+    cause?: unknown
+  ) {
+    super(message, cause);
+    this.name = 'ServiceUnavailableError';
+    Object.setPrototypeOf(this, ServiceUnavailableError.prototype);
   }
 }

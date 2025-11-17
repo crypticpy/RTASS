@@ -229,17 +229,28 @@ export function FindingsList({
                       </h3>
                       <div className="flex items-center gap-2">
                         <Clock className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-                        <button
+                        <span
                           onClick={(e) => {
                             e.stopPropagation();
                             if (onTimestampClick) {
                               onTimestampClick(finding.timestamp);
                             }
                           }}
-                          className="text-xs text-muted-foreground hover:text-primary hover:underline font-mono"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              if (onTimestampClick) {
+                                onTimestampClick(finding.timestamp);
+                              }
+                            }
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          className="text-xs text-muted-foreground hover:text-primary hover:underline font-mono cursor-pointer"
                         >
                           {formatTimestamp(finding.timestamp)}
-                        </button>
+                        </span>
                       </div>
                     </div>
                   </div>

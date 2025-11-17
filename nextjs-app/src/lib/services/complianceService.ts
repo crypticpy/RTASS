@@ -9,10 +9,14 @@
  * - Provides actionable recommendations
  */
 
+import OpenAI from 'openai';
 import { getOpenAIClient, withRateLimit, trackTokenUsage } from './utils/openai';
+import { extractResponseText } from '@/lib/openai/utils';
 import { templateService } from './templateService';
 import { prisma } from '@/lib/db';
+import { withTransaction } from '@/lib/utils/database';
 import { Errors } from './utils/errorHandlers';
+import { validateContentNotEmpty } from '@/lib/utils/validators';
 import type {
   AuditResult,
   AuditStatus,
@@ -32,9 +36,155 @@ import {
   type IncidentContext,
   type AuditResults,
 } from '@/lib/openai/compliance-analysis';
+import {
+  logAuditStart,
+  logCategoryScoring,
+  logCategoryScoringComplete,
+  logCategoryScoringError,
+  logNarrativeGeneration,
+  logNarrativeComplete,
+  logAuditComplete,
+  logAuditError,
+  logAuditProgress,
+  logPartialResultSave,
+  generateCorrelationId,
+  logger,
+} from '@/lib/logging';
+import { circuitBreakers } from '@/lib/utils/circuitBreaker';
 
 // Prisma JSON type helper
 type PrismaJson = Record<string, unknown> | unknown[];
+
+/**
+ * Normalizes evidence timestamps to MM:SS format
+ *
+ * Handles invalid timestamps from GPT-4.1 responses by converting various formats
+ * to a consistent MM:SS format. This prevents display and processing issues.
+ *
+ * @param timestamp - Timestamp string from GPT response (can be null, undefined, or invalid)
+ * @returns Normalized timestamp in MM:SS format (e.g., "02:45")
+ *
+ * @example
+ * ```typescript
+ * normalizeTimestamp('125')        // '2:05' (seconds to MM:SS)
+ * normalizeTimestamp('1:23:45')    // '83:45' (HH:MM:SS to MM:SS)
+ * normalizeTimestamp('invalid')    // '00:00' (fallback)
+ * normalizeTimestamp('2:65')       // '2:00' (invalid seconds)
+ * ```
+ */
+function normalizeTimestamp(
+  timestamp: string | undefined | null,
+  context?: { criterionId?: string; auditId?: string }
+): string {
+  if (!timestamp || timestamp === 'invalid' || timestamp === 'N/A') {
+    return '00:00';
+  }
+
+  // Match MM:SS format
+  const mmssMatch = timestamp.match(/^(\d{1,3}):(\d{2})$/);
+  if (mmssMatch) {
+    const minutes = parseInt(mmssMatch[1], 10);
+    const seconds = parseInt(mmssMatch[2], 10);
+
+    // Validate seconds
+    if (seconds >= 60) {
+      logger.warn('Invalid seconds in timestamp, normalizing', {
+        component: 'compliance-service',
+        operation: 'normalize-timestamp',
+        originalTimestamp: timestamp,
+        criterionId: context?.criterionId,
+        auditId: context?.auditId,
+      });
+      return `${minutes}:00`;
+    }
+
+    return timestamp;
+  }
+
+  // Match HH:MM:SS format and convert to MM:SS
+  const hhmmssMatch = timestamp.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+  if (hhmmssMatch) {
+    const hours = parseInt(hhmmssMatch[1], 10);
+    const minutes = parseInt(hhmmssMatch[2], 10);
+    const seconds = parseInt(hhmmssMatch[3], 10);
+
+    const totalMinutes = hours * 60 + minutes;
+    return `${totalMinutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  // Match seconds only (e.g., "125" -> "2:05")
+  const secondsMatch = timestamp.match(/^(\d+)$/);
+  if (secondsMatch) {
+    const totalSeconds = parseInt(secondsMatch[1], 10);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  // Couldn't parse, return default
+  logger.warn('Unable to parse timestamp, using default', {
+    component: 'compliance-service',
+    operation: 'normalize-timestamp',
+    originalTimestamp: timestamp,
+    criterionId: context?.criterionId,
+    auditId: context?.auditId,
+  });
+
+  return '00:00';
+}
+
+/**
+ * Validates and clamps criterion scores to valid range [0, 100]
+ *
+ * Ensures scores from GPT-4.1 responses are within valid bounds.
+ * Invalid scores are logged and clamped to prevent data corruption.
+ *
+ * @param score - Score value from GPT response (can be null, undefined, or out of bounds)
+ * @param criterionId - Criterion identifier for logging
+ * @returns Valid score in range [0, 100]
+ *
+ * @example
+ * ```typescript
+ * validateCriterionScore(85, 'criterion-1')     // 85
+ * validateCriterionScore(-10, 'criterion-2')    // 0 (clamped)
+ * validateCriterionScore(150, 'criterion-3')    // 100 (clamped)
+ * validateCriterionScore(null, 'criterion-4')   // 0 (default)
+ * ```
+ */
+function validateCriterionScore(score: number | undefined | null, criterionId: string): number {
+  if (score === undefined || score === null || isNaN(score)) {
+    logger.warn('Invalid criterion score, using 0', {
+      component: 'compliance-service',
+      operation: 'validate-criterion-score',
+      criterionId,
+      score,
+    });
+    return 0;
+  }
+
+  // Clamp to [0, 100] range
+  if (score < 0) {
+    logger.warn('Criterion score below 0, clamping to 0', {
+      component: 'compliance-service',
+      operation: 'validate-criterion-score',
+      criterionId,
+      originalScore: score,
+    });
+    return 0;
+  }
+
+  if (score > 100) {
+    logger.warn('Criterion score above 100, clamping to 100', {
+      component: 'compliance-service',
+      operation: 'validate-criterion-score',
+      criterionId,
+      originalScore: score,
+    });
+    return 100;
+  }
+
+  return score;
+}
 
 /**
  * Progress callback for modular audit execution
@@ -52,6 +202,7 @@ export interface ModularAuditOptions {
   onProgress?: AuditProgressCallback;
   savePartialResults?: boolean;
   additionalNotes?: string;
+  correlationId?: string;
 }
 
 /**
@@ -126,17 +277,67 @@ export class ComplianceService {
     const startTime = Date.now();
 
     try {
-      // Step 1: Fetch transcript and template
-      const transcript = await prisma.transcript.findUnique({
-        where: { id: transcriptId },
-        include: { incident: true },
-      });
+      // Step 1: Fetch transcript and template (validate both exist up-front to fail fast)
+      const [transcript, template] = await Promise.all([
+        prisma.transcript.findUnique({
+          where: { id: transcriptId },
+          include: { incident: true },
+        }),
+        templateService.getTemplateById(templateId),
+      ]);
 
       if (!transcript) {
         throw Errors.notFound('Transcript', transcriptId);
       }
 
-      const template = await templateService.getTemplateById(templateId);
+      if (!template.isActive) {
+        throw Errors.invalidInput('templateId', 'Template is not active');
+      }
+
+
+      // Validate incident exists and is not resolved
+      if (!transcript.incident) {
+        throw Errors.invalidInput(
+          'transcriptId',
+          'Transcript must be associated with an incident'
+        );
+      }
+
+      if (transcript.incident.status === 'RESOLVED') {
+        logger.warn('Skipping audit for resolved incident', {
+          component: 'compliance-service',
+          operation: 'audit-transcript',
+          incidentId: transcript.incident.id,
+          incidentNumber: transcript.incident.number,
+          status: transcript.incident.status,
+        });
+
+        throw Errors.invalidInput(
+          'incidentId',
+          `Cannot audit resolved incident ${transcript.incident.number}. Audits must be run while incident is active.`
+        );
+      }
+
+      // Validate transcript has content
+      validateContentNotEmpty(transcript.text, 'transcript.text');
+
+      // Validate transcript has sufficient content for analysis
+      if (transcript.text.trim().length < 10) {
+        throw Errors.invalidInput(
+          'transcriptId',
+          'Transcript text is too short for meaningful analysis'
+        );
+      }
+
+      // Warn if transcript has no segments (may have limited context)
+      if (!transcript.segments || (transcript.segments as any[]).length === 0) {
+        logger.warn('Transcript has no segments, audit may have limited context', {
+          component: 'compliance-service',
+          operation: 'audit-transcript',
+          transcriptId: transcript.id,
+          textLength: transcript.text?.length || 0,
+        });
+      }
 
       // Step 2: Build scoring prompt
       const prompt = this.buildScoringPrompt(
@@ -187,18 +388,24 @@ export class ComplianceService {
         allFindings
       );
 
-      // Step 10: Save audit to database
-      const audit = await this.saveAudit({
-        incidentId: transcript.incidentId,
-        transcriptId: transcript.id,
-        templateId: template.id,
-        overallScore,
-        overallStatus,
-        summary,
-        categories: categoriesWithScores,
-        findings: allFindings,
-        recommendations,
-        metadata,
+      // Step 10: Save audit to database (wrapped in transaction for atomicity)
+      const audit = await withTransaction(async (tx) => {
+        return await tx.audit.create({
+          data: {
+            incidentId: transcript.incidentId,
+            transcriptId: transcript.id,
+            templateId: template.id,
+            overallScore,
+            overallStatus,
+            summary,
+            findings: {
+              categories: categoriesWithScores,
+              findings: allFindings,
+            } as any,
+            recommendations: recommendations as any,
+            metadata: metadata as any,
+          },
+        });
       });
 
       // Step 11: Return formatted result
@@ -350,12 +557,12 @@ Provide ONLY the JSON output, no additional text.`;
       const client = getOpenAIClient();
 
       const response = await withRateLimit(async () => {
-        return await client.chat.completions.create({
-          model: 'gpt-4.1',  // ⚠️ DO NOT change this model
-          temperature: 0.1, // Low for consistency
-          max_tokens: 4000,
+        return await client.responses.create({
+          model: 'gpt-4.1', // ⚠️ DO NOT change this model
+          temperature: 0.1,
+          max_output_tokens: 4000,
           response_format: { type: 'json_object' },
-          messages: [
+          input: [
             {
               role: 'system',
               content:
@@ -371,20 +578,69 @@ Provide ONLY the JSON output, no additional text.`;
 
       // Track token usage
       if (response.usage) {
+        const promptTokens =
+          response.usage.input_tokens ?? response.usage.prompt_tokens ?? 0;
+        const completionTokens =
+          response.usage.output_tokens ?? response.usage.completion_tokens ?? 0;
+        const totalTokens =
+          response.usage.total_tokens ?? promptTokens + completionTokens;
+
         await trackTokenUsage(
-          'gpt-4.1',  // ⚠️ DO NOT change this model
+          'gpt-4.1', // ⚠️ DO NOT change this model
           {
-            promptTokens: response.usage.prompt_tokens,
-            completionTokens: response.usage.completion_tokens,
-            totalTokens: response.usage.total_tokens,
+            promptTokens,
+            completionTokens,
+            totalTokens,
           },
           'compliance_audit'
         );
       }
 
+      const rawContent = extractResponseText(
+        response,
+        'Compliance audit scoring response'
+      );
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawContent || '{}');
+      } catch (error) {
+        logger.warn('GPT-4.1 returned invalid JSON, attempting partial result recovery', {
+          component: 'compliance-service',
+          operation: 'parse-gpt-response',
+          transcriptId: 'unknown', // Not available in this context
+          templateId: 'unknown', // Not available in this context
+          rawContent: rawContent?.substring(0, 500), // Log first 500 chars for debugging
+          parseError: error instanceof Error ? error.message : String(error),
+        });
+
+        // No partial results available in legacy method, throw error
+        throw Errors.processingFailed(
+          'GPT-4.1 response parsing',
+          `Invalid JSON: ${error instanceof Error ? error.message : 'Unknown error'}`
+        );
+      }
+
+      const usageSummary = response.usage
+        ? {
+            prompt:
+              response.usage.input_tokens ??
+              response.usage.prompt_tokens ??
+              0,
+            completion:
+              response.usage.output_tokens ??
+              response.usage.completion_tokens ??
+              0,
+            total:
+              response.usage.total_tokens ??
+              ((response.usage.input_tokens ?? response.usage.prompt_tokens ?? 0) +
+                (response.usage.output_tokens ?? response.usage.completion_tokens ?? 0)),
+          }
+        : undefined;
+
       return {
-        content: JSON.parse(response.choices[0].message.content || '{}'),
-        usage: response.usage,
+        content: parsed,
+        usage: usageSummary,
       };
     } catch (error) {
       if (error instanceof Error) {
@@ -548,6 +804,33 @@ Provide ONLY the JSON output, no additional text.`;
   }
 
   /**
+   * Calculate overall score from partial category results
+   *
+   * Uses only completed categories, normalizes weights.
+   * This is used when JSON parsing fails but some categories succeeded.
+   *
+   * @private
+   * @param {any[]} categoryResults - Partial category results
+   * @returns {number} Normalized overall score (0-100)
+   */
+  private calculatePartialScore(categoryResults: any[]): number {
+    const completed = categoryResults.filter(
+      (r) => r.categoryScore !== undefined && r.categoryScore !== null
+    );
+
+    if (completed.length === 0) {
+      return 0;
+    }
+
+    // Simple average for partial results (weights may not sum to 1.0)
+    const sum = completed.reduce(
+      (total, cat) => total + (cat.categoryScore || 0),
+      0
+    );
+    return Math.round(sum / completed.length);
+  }
+
+  /**
    * Calculate overall score with category weighting
    *
    * @private
@@ -564,6 +847,16 @@ Provide ONLY the JSON output, no additional text.`;
 
     // Calculate total weight of applicable categories
     const totalWeight = applicable.reduce((sum, c) => sum + c.weight, 0);
+
+    // Handle case where all weights are zero (prevents division by zero)
+    if (totalWeight === 0) {
+      logger.warn('All category weights are zero, defaulting to 0.0 score', {
+        component: 'compliance-service',
+        operation: 'calculate-overall-score',
+        categoryCount: applicable.length,
+      });
+      return 0.0;
+    }
 
     // Calculate weighted average
     const weightedSum = applicable.reduce((sum, c) => {
@@ -731,52 +1024,6 @@ ${
   }
 
   /**
-   * Save audit to database
-   *
-   * @private
-   * @param {object} auditData - Audit data to save
-   * @returns {Promise} Saved audit
-   */
-  private async saveAudit(auditData: {
-    incidentId: string;
-    transcriptId: string | null;
-    templateId: string;
-    overallScore: number | null;
-    overallStatus: AuditStatus;
-    summary: string;
-    categories: ComplianceCategory[];
-    findings: Finding[];
-    recommendations: Recommendation[];
-    metadata: AuditMetadata;
-  }) {
-    try {
-      const audit = await prisma.audit.create({
-        data: {
-          incidentId: auditData.incidentId,
-          transcriptId: auditData.transcriptId,
-          templateId: auditData.templateId,
-          overallScore: auditData.overallScore,
-          overallStatus: auditData.overallStatus,
-          summary: auditData.summary,
-          findings: {
-            categories: auditData.categories,
-            findings: auditData.findings,
-          } as any,
-          recommendations: auditData.recommendations as any,
-          metadata: auditData.metadata as any,
-        },
-      });
-
-      return audit;
-    } catch (error) {
-      throw Errors.processingFailed(
-        'Audit save',
-        error instanceof Error ? error.message : 'Unknown error'
-      );
-    }
-  }
-
-  /**
    * Get audit by ID
    *
    * @param {string} auditId - Audit ID
@@ -885,6 +1132,15 @@ ${
     options?: ModularAuditOptions
   ): Promise<AuditResult> {
     const startTime = Date.now();
+    const correlationId = options?.correlationId || generateCorrelationId();
+    const auditId = correlationId.replace('cor_', 'audit_');
+
+    // Initialize tracking variables before try block for error handling visibility
+    // eslint-disable-next-line prefer-const
+    let categoryResults: CategoryAnalysisResult[] = [];
+    // eslint-disable-next-line prefer-const
+    let failedCategories: string[] = [];
+    let categories: ComplianceCategory[] = [];
 
     try {
       // Step 1: Fetch transcript and template
@@ -903,8 +1159,62 @@ ${
         throw Errors.notFound('Transcript', transcriptId);
       }
 
+
+      // Validate incident exists and is not resolved
+      if (!transcript.incident) {
+        throw Errors.invalidInput(
+          'transcriptId',
+          'Transcript must be associated with an incident'
+        );
+      }
+
+      if (transcript.incident.status === 'RESOLVED') {
+        logger.warn('Skipping audit for resolved incident', {
+          component: 'compliance-service',
+          operation: 'modular-audit',
+          incidentId: transcript.incident.id,
+          incidentNumber: transcript.incident.number,
+          status: transcript.incident.status,
+          correlationId,
+        });
+
+        throw Errors.invalidInput(
+          'incidentId',
+          `Cannot audit resolved incident ${transcript.incident.number}. Audits must be run while incident is active.`
+        );
+      }
+
+      // Validate transcript has content
+      validateContentNotEmpty(transcript.text, 'transcript.text');
+
+      // Validate transcript has sufficient content for analysis
+      if (transcript.text.trim().length < 10) {
+        throw Errors.invalidInput(
+          'transcriptId',
+          'Transcript text is too short for meaningful analysis'
+        );
+      }
+
+      // Warn if transcript has no segments (may have limited context)
+      if (!transcript.segments || (transcript.segments as any[]).length === 0) {
+        logger.warn('Transcript has no segments, audit may have limited context', {
+          component: 'compliance-service',
+          operation: 'modular-audit',
+          transcriptId: transcript.id,
+          textLength: transcript.text?.length || 0,
+          correlationId,
+        });
+      }
+
       const template = await templateService.getTemplateById(templateId);
-      const categories = template.categories as any as ComplianceCategory[];
+      categories = template.categories as any as ComplianceCategory[];
+
+      // Log audit start
+      logAuditStart(auditId, templateId, transcriptId, categories.length, {
+        incidentId: transcript.incidentId,
+        incidentType: transcript.incident?.type,
+        correlationId,
+      });
 
       // Step 2: Extract incident context
       const incidentContext: IncidentContext = {
@@ -914,9 +1224,7 @@ ${
         notes: options?.additionalNotes,
       };
 
-      // Step 3: Initialize tracking variables
-      const categoryResults: CategoryAnalysisResult[] = [];
-      const failedCategories: string[] = [];
+      // Step 3: Initialize tracking variables (now declared at function scope)
       const categoryTokenUsage: Record<string, number> = {};
       let totalTokens = 0;
 
@@ -929,8 +1237,19 @@ ${
       // Step 5: Loop through each category sequentially
       for (let i = 0; i < categories.length; i++) {
         const category = categories[i];
+        const progress = `${i + 1}/${categories.length}`;
+        const categoryStartTime = Date.now();
 
         try {
+          // Log category scoring start
+          logCategoryScoring(
+            auditId,
+            category.name,
+            progress,
+            category.criteria.length,
+            { categoryWeight: category.weight, correlationId }
+          );
+
           // Transform ComplianceCategory to TemplateCategory format
           const templateCategory = {
             id: category.name.toLowerCase().replace(/\s+/g, '-'),
@@ -948,17 +1267,70 @@ ${
           };
 
           // Call modular scoring function (analyzeCategory from OpenAI service)
-          const result = await analyzeCategory(
-            transcript.text,
-            incidentContext,
-            templateCategory,
-            {
-              model: 'gpt-4.1',  // ⚠️ DO NOT change this model
-              temperature: 0.3, // Low temperature for consistency
+          // Wrapped in circuit breaker with content moderation error handling
+          let result: CategoryAnalysisResult;
+
+          try {
+            result = await circuitBreakers.openaiGPT4.execute(async () => {
+              return await analyzeCategory(
+                transcript.text,
+                incidentContext,
+                templateCategory,
+                {
+                  model: 'gpt-4.1',  // ⚠️ DO NOT change this model
+                  temperature: 0.3, // Low temperature for consistency
+                }
+              );
+            });
+          } catch (error) {
+            // Check for OpenAI content policy violation
+            if (error instanceof OpenAI.APIError && error.code === 'content_policy_violation') {
+              logger.warn('Content moderation refusal from OpenAI', {
+                component: 'compliance-service',
+                operation: 'category-scoring',
+                categoryName: category.name,
+                transcriptId,
+                templateId,
+                errorCode: error.code,
+                errorMessage: error.message,
+              });
+
+              // Return placeholder result instead of failing
+              result = {
+                category: category.name,
+                categoryScore: 0,
+                criteriaScores: [],
+                overallAnalysis: 'Content analysis was refused by OpenAI content moderation policy.',
+                strengths: [],
+                weaknesses: ['Unable to analyze content due to policy restrictions'],
+                recommendations: [
+                  'Review transcript content for policy violations',
+                  'Contact system administrator if you believe this is in error',
+                ],
+                keyFindings: ['Content moderation refusal'],
+                moderationRefused: true,
+              } as any; // Type cast for moderationRefused flag
+            } else {
+              // Re-throw non-moderation errors
+              throw error;
             }
-          );
+          }
 
           categoryResults.push(result);
+
+          // Calculate category duration and log completion
+          const categoryDuration = Date.now() - categoryStartTime;
+          const categoryScore = Math.round(result.categoryScore * 100);
+          const categoryStatus = this.determineOverallStatus(categoryScore);
+
+          logCategoryScoringComplete(
+            auditId,
+            category.name,
+            categoryScore,
+            categoryStatus as any,
+            categoryDuration,
+            { criteriaScored: result.criteriaScores.length, correlationId }
+          );
 
           // Track token usage (estimated)
           const estimatedTokens = Math.round(
@@ -979,27 +1351,60 @@ ${
               templateId,
               result
             );
+
+            // Log partial result save
+            logPartialResultSave(auditId, category.name, categoryScore, { correlationId });
           }
-        } catch (error) {
-          // Handle category failure gracefully
-          console.error(`Category "${category.name}" failed:`, error);
+
+          // Log progress every 3 categories
+          if ((i + 1) % 3 === 0 || (i + 1) === categories.length) {
+            const currentAvgScore = categoryResults.reduce((sum, r) => sum + r.categoryScore, 0) / categoryResults.length;
+            logAuditProgress(
+              auditId,
+              i + 1,
+              categories.length,
+              Math.round(currentAvgScore * 100),
+              { correlationId }
+            );
+          }
+        } catch (categoryError) {
+          // Log category scoring error
+          logCategoryScoringError(
+            auditId,
+            category.name,
+            categoryError instanceof Error ? categoryError : new Error(String(categoryError)),
+            { criteriaCount: category.criteria.length, correlationId }
+          );
+
+          // Handle category failure gracefully - log as warning instead of error
+          logger.warn('Category analysis failed, using placeholder result', {
+            component: 'compliance-service',
+            operation: 'modular-audit-category',
+            auditId,
+            category: category.name,
+            error: categoryError instanceof Error ? categoryError.message : String(categoryError),
+            progress,
+            correlationId,
+          });
+
           failedCategories.push(category.name);
 
-          // Add placeholder result with error
+          // Add placeholder result instead of failing entire audit
           categoryResults.push({
             category: category.name,
             categoryScore: 0,
             criteriaScores: [],
-            overallAnalysis: `Error: ${
-              error instanceof Error ? error.message : 'Unknown error'
+            overallAnalysis: `Category analysis failed: ${
+              categoryError instanceof Error ? categoryError.message : 'Unknown error'
             }`,
             keyFindings: [],
             recommendations: [
-              'This category could not be scored due to an error. Please retry the audit.',
+              'Retry audit for this category',
             ],
-          });
+            partialFailure: true, // Flag for partial failure
+          } as any); // Type cast needed for partialFailure flag
 
-          // Continue with next category (don't abort audit)
+          // Continue to next category instead of throwing
         }
       }
 
@@ -1031,12 +1436,25 @@ ${
         this.generateRecommendationsFromResults(categoryResults);
 
       // Step 11: Generate final narrative
+      logNarrativeGeneration(auditId, categoryResults.length, 0, { correlationId });
+      const narrativeStartTime = Date.now();
+
       const auditResults: AuditResults = {
         overallScore,
         categories: categoryResults,
         criticalFindings: extractCriticalFindings({ overallScore, categories: categoryResults }),
       };
       const narrative = await generateAuditNarrative(auditResults);
+
+      // Log narrative completion
+      const narrativeDuration = Date.now() - narrativeStartTime;
+      logNarrativeComplete(
+        auditId,
+        narrative.length,
+        overallScoreNormalized,
+        narrativeDuration,
+        { correlationId }
+      );
 
       // Step 12: Prepare metadata
       const processingTime = (Date.now() - startTime) / 1000;
@@ -1055,19 +1473,41 @@ ${
         partialResultsSaved: options?.savePartialResults,
       } as any;
 
-      // Step 13: Save audit to database
-      const audit = await this.saveAudit({
-        incidentId: transcript.incidentId,
-        transcriptId: transcript.id,
-        templateId: template.id,
-        overallScore: overallScoreNormalized,
-        overallStatus,
-        summary: narrative,
-        categories: transformedCategories,
-        findings: allFindings,
-        recommendations,
-        metadata,
+      // Step 13: Save audit to database (wrapped in transaction for atomicity)
+      const audit = await withTransaction(async (tx) => {
+        return await tx.audit.create({
+          data: {
+            incidentId: transcript.incidentId,
+            transcriptId: transcript.id,
+            templateId: template.id,
+            overallScore: overallScoreNormalized,
+            overallStatus,
+            summary: narrative,
+            findings: {
+              categories: transformedCategories,
+              findings: allFindings,
+            } as any,
+            recommendations: recommendations as any,
+            metadata: metadata as any,
+          },
+        });
       });
+
+      // Log audit completion
+      const totalDuration = Date.now() - startTime;
+      logAuditComplete(
+        auditId,
+        overallScoreNormalized,
+        categoryResults.length,
+        categories.length,
+        totalDuration,
+        {
+          failedCategories,
+          tokenUsage: totalTokens,
+          partialResultsSaved: options?.savePartialResults,
+          correlationId,
+        }
+      );
 
       // Step 14: Return formatted result
       return {
@@ -1085,6 +1525,31 @@ ${
         createdAt: audit.createdAt,
       };
     } catch (error) {
+      // Log audit error (use variables from outer scope)
+      const completedCategories = categoryResults?.length || 0;
+      const totalCategories = categories?.length || 0;
+      const categoriesWithFailures = failedCategories || [];
+
+      logAuditError(
+        auditId,
+        error instanceof Error ? error : new Error(String(error)),
+        completedCategories,
+        {
+          totalCategories,
+          failedCategories: categoriesWithFailures,
+          correlationId: options?.correlationId,
+        }
+      );
+
+      logger.error('Modular compliance audit failed', {
+        component: 'compliance-audit',
+        operation: 'execute-modular-audit',
+        auditId,
+        error: error instanceof Error ? error : new Error(String(error)),
+        duration: Date.now() - startTime,
+        correlationId: options?.correlationId,
+      });
+
       if (error instanceof Error && error.message.includes('not found')) {
         throw error;
       }
@@ -1164,12 +1629,46 @@ ${
           );
 
           if (!templateCriterion) {
-            throw new Error(`Criterion not found: ${score.criterionId}`);
+            logger.warn('Criterion not found in template, using default score', {
+              component: 'compliance-service',
+              operation: 'transform-category-results',
+              category: result.category,
+              criterionId: score.criterionId,
+            });
+
+            // Use default score instead of failing
+            const findings: Finding[] = score.evidence.map((ev) => ({
+              timestamp: normalizeTimestamp(ev.timestamp),
+              quote: ev.text,
+              compliance:
+                ev.type === 'VIOLATION'
+                  ? 'NEGATIVE'
+                  : ev.type === 'COMPLIANCE'
+                    ? 'POSITIVE'
+                    : 'NEUTRAL',
+              significance:
+                score.impact === 'CRITICAL' ? 'HIGH' : score.impact || 'MEDIUM',
+              explanation: score.reasoning,
+              criterionId: score.criterionId,
+            }));
+
+            return {
+              id: score.criterionId,
+              description: 'Unknown Criterion',
+              evidenceRequired: '',
+              scoringMethod: 'NUMERIC',
+              weight: 0,
+              status: 'NOT_APPLICABLE' as CriterionStatus,
+              score: 0,
+              rationale: 'Criterion not found in template',
+              findings,
+              recommendations: [],
+            };
           }
 
-          // Convert evidence to findings
+          // Convert evidence to findings with timestamp normalization
           const findings: Finding[] = score.evidence.map((ev) => ({
-            timestamp: ev.timestamp,
+            timestamp: normalizeTimestamp(ev.timestamp),
             quote: ev.text,
             compliance:
               ev.type === 'VIOLATION'
@@ -1183,10 +1682,14 @@ ${
             criterionId: score.criterionId,
           }));
 
+          // Validate and normalize score
+          const numericScore = this.convertScoreToNumeric(score.score);
+          const validatedScore = validateCriterionScore(numericScore, score.criterionId);
+
           return {
             ...templateCriterion,
             status: score.score as CriterionStatus,
-            score: this.convertScoreToNumeric(score.score),
+            score: validatedScore,
             rationale: score.reasoning,
             findings,
             recommendations: score.recommendation
@@ -1247,7 +1750,7 @@ ${
       categoryResult.criteriaScores.forEach((score) => {
         score.evidence.forEach((ev) => {
           findings.push({
-            timestamp: ev.timestamp,
+            timestamp: normalizeTimestamp(ev.timestamp),
             quote: ev.text,
             compliance:
               ev.type === 'VIOLATION'
@@ -1349,7 +1852,14 @@ ${
       });
     } catch (error) {
       // Log error but don't throw (partial save is optional)
-      console.error('Failed to save partial category score:', error);
+      logger.error('Failed to save partial category score', {
+        component: 'compliance-service',
+        operation: 'save-partial-category',
+        transcriptId,
+        templateId,
+        categoryName: categoryResult.category,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
     }
   }
 

@@ -130,8 +130,13 @@ export default function PolicyUploadPage() {
         },
         body: JSON.stringify({
           template: generatedTemplate.template,
-          policyDocumentIds: uploadedDocIds,
-          metadata: generatedTemplate.metadata,
+          sourcePolicyIds: uploadedDocIds,
+          generationMetadata: {
+            confidence: generatedTemplate.confidence,
+            aiModel: generatedTemplate.template.metadata?.aiModel || 'gpt-4.1',
+            processingLog: generatedTemplate.processingLog,
+            suggestions: generatedTemplate.suggestions,
+          },
         }),
       });
 
@@ -151,7 +156,7 @@ export default function PolicyUploadPage() {
 
       // Wait a moment then redirect to template editor
       setTimeout(() => {
-        router.push(`/policy/templates/${savedTemplate.id}/edit`);
+        router.push(`/policy/templates/${savedTemplate.templateId}/edit`);
       }, 2000);
     } catch (error) {
       console.error('Template generation failed:', error);

@@ -3,11 +3,24 @@
  *
  * Provides audio transcription capabilities using OpenAI's Whisper model.
  * Handles chunking for large files, retry logic, and progress tracking.
+ *
+ * ## Timeout Configuration
+ *
+ * Whisper API calls use a 5-minute timeout to accommodate large audio files.
+ * This is configured per-request to override the client's default 2-minute timeout.
  */
 
+import OpenAI from 'openai';
 import { openai } from './client';
-import { TranscriptionError } from './errors';
+import {
+  TranscriptionError,
+  RateLimitError,
+  ServiceUnavailableError,
+  ContextLengthExceededError,
+} from './errors';
 import { retryWithBackoff, estimateTokens, logAPICall } from './utils';
+import { circuitBreakers } from '@/lib/utils/circuitBreaker';
+import { logger } from '@/lib/logging';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -93,16 +106,23 @@ export async function transcribeAudio(
       type: 'audio/mpeg',
     });
 
-    // Call Whisper API with retry logic
-    const result = await retryWithBackoff(async () => {
-      return await openai.audio.transcriptions.create({
-        file: audioFile,
-        model: 'whisper-1',
-        language: options.language,
-        prompt: options.prompt,
-        temperature: options.temperature ?? 0,
-        response_format: 'verbose_json',
-        timestamp_granularities: ['segment'],
+    // Call Whisper API with circuit breaker, retry logic, and extended timeout
+    const result = await circuitBreakers.openaiWhisper.execute(async () => {
+      return await retryWithBackoff(async () => {
+        return await openai.audio.transcriptions.create(
+          {
+            file: audioFile,
+            model: 'whisper-1',
+            language: options.language,
+            prompt: options.prompt,
+            temperature: options.temperature ?? 0,
+            response_format: 'verbose_json',
+            timestamp_granularities: ['segment'],
+          },
+          {
+            timeout: 5 * 60 * 1000, // 5 minutes for large audio files
+          }
+        );
       });
     });
 
@@ -126,6 +146,53 @@ export async function transcribeAudio(
 
     return response;
   } catch (error) {
+    // Handle OpenAI APIError specifically
+    if (error instanceof OpenAI.APIError) {
+      logger.error('OpenAI Whisper API error', {
+        component: 'openai-whisper',
+        status: error.status,
+        code: error.code,
+        type: error.type,
+        requestId: error.request_id,
+        message: error.message,
+      });
+
+      // Handle specific error types
+      if (error.status === 429) {
+        throw new RateLimitError(
+          'OpenAI Whisper API rate limit exceeded',
+          undefined,
+          error.request_id,
+          error
+        );
+      }
+
+      if (error.status === 503) {
+        throw new ServiceUnavailableError(
+          'OpenAI Whisper API temporarily unavailable',
+          undefined,
+          error
+        );
+      }
+
+      if (error.code === 'context_length_exceeded') {
+        throw new ContextLengthExceededError(
+          'Audio file exceeds Whisper model context limit',
+          undefined,
+          undefined,
+          error
+        );
+      }
+
+      // Generic APIError
+      throw new TranscriptionError(
+        `OpenAI Whisper API error: ${error.message}`,
+        undefined,
+        error
+      );
+    }
+
+    // Handle other errors
     throw new TranscriptionError(
       `Failed to transcribe audio: ${error instanceof Error ? error.message : 'Unknown error'}`,
       undefined,

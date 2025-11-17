@@ -21,10 +21,21 @@
  * @module lib/openai/compliance-analysis-modular
  */
 
+import OpenAI from 'openai';
 import { zodResponseFormat } from 'openai/helpers/zod';
 import { openai } from './client';
-import { AnalysisError } from './errors';
-import { retryWithBackoff, estimateTokens, logAPICall } from './utils';
+import {
+  AnalysisError,
+  RateLimitError,
+  ServiceUnavailableError,
+  ContextLengthExceededError,
+} from './errors';
+import {
+  retryWithBackoff,
+  estimateTokens,
+  logAPICall,
+  extractResponseText,
+} from './utils';
 import {
   CategoryScoreSchema,
   AuditNarrativeSchema,
@@ -34,6 +45,10 @@ import {
   type EvidenceItem,
 } from '@/lib/schemas/compliance-analysis.schema';
 import type { TemplateCategory } from '@/types/policy';
+import { wrapOpenAICall, logOpenAISchemaValidation, logger } from '@/lib/logging';
+import { circuitBreakers } from '@/lib/utils/circuitBreaker';
+import { requestQueues } from '@/lib/utils/requestQueue';
+import { Errors } from '@/lib/services/utils/errorHandlers';
 
 /**
  * Transcript segment with timestamp
@@ -378,60 +393,149 @@ export async function scoreSingleCategory(
     // Estimate tokens for logging
     const inputTokens = estimateTokens(systemPrompt + userPrompt);
 
-    // ⚠️ CRITICAL: Must use responses.create() API, NOT chat.completions.create()
-    // Call GPT-4.1 with structured outputs using retry logic
-    const completion = await retryWithBackoff(async () => {
-      return await openai.chat.completions.create({
-        model,  // ⚠️ DO NOT change this model
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt,
-          },
-          {
-            role: 'user',
-            content: userPrompt,
-          },
-        ],
-        temperature,
-        response_format: zodResponseFormat(CategoryScoreSchema, 'category_score'),
-      });
-    });
+    // Request queue → Circuit breaker → Logging → Retry → OpenAI API
+    // Queue controls request admission (rate limiting, concurrency)
+    // Circuit breaker prevents cascading failures
+    // Logging tracks API calls and token usage
+    // Retry handles transient failures
+    const completion = await requestQueues.openaiAPI.enqueue(
+      async () => {
+        return await circuitBreakers.openaiGPT4.execute(async () => {
+          return await wrapOpenAICall(
+            'compliance-category-scoring',
+            model,
+            inputTokens,
+            async () => {
+              return await retryWithBackoff(async () => {
+                return await openai.responses.create(
+                  {
+                    model, // ⚠️ DO NOT change this model
+                    input: [
+                      { role: 'system', content: systemPrompt },
+                      { role: 'user', content: userPrompt },
+                    ],
+                    temperature,
+                    response_format: zodResponseFormat(
+                      CategoryScoreSchema as any,
+                      'category_score'
+                    ),
+                  },
+                  {
+                    timeout: 3 * 60 * 1000, // 3 minutes for compliance analysis
+                  }
+                );
+              });
+            },
+            {
+              estimatedInputTokens: inputTokens,
+              categoryName: category.name,
+              criteriaCount: category.criteria.length,
+            }
+          );
+        });
+      },
+      1 // Normal priority for user-initiated compliance audits
+    );
 
-    // Check for refusal (AI declined to respond)
-    const message = completion.choices[0]?.message;
-    if (!message) {
-      throw new AnalysisError('No response from GPT-4.1', category.name);
-    }
+    const responseText = extractResponseText(
+      completion,
+      `Category score response (${category.name})`
+    );
 
-    if (message.refusal) {
-      throw new AnalysisError(
-        `AI refused to score category: ${message.refusal}`,
-        category.name
+    let parsed: any;
+    try {
+      parsed = CategoryScoreSchema.parse(JSON.parse(responseText));
+
+      logOpenAISchemaValidation(
+        'compliance-category-scoring',
+        'CategoryScoreSchema',
+        true,
+        [],
+        { categoryName: category.name }
       );
+    } catch (zodError) {
+      const errors =
+        zodError instanceof Error ? [zodError.message] : ['Unknown validation error'];
+      logOpenAISchemaValidation(
+        'compliance-category-scoring',
+        'CategoryScoreSchema',
+        false,
+        errors,
+        { categoryName: category.name }
+      );
+      throw zodError;
     }
 
-    // Extract and validate content
-    const responseText = message.content;
-    if (!responseText) {
-      throw new AnalysisError('Empty response from GPT-4.1', category.name);
-    }
-
-    // Parse with Zod schema validation
-    const parsed = CategoryScoreSchema.parse(JSON.parse(responseText));
-
-    // Add timestamp
     const categoryScore: CategoryScore = {
       ...parsed,
       timestamp: new Date().toISOString(),
     };
 
-    // Log API call for monitoring
-    const outputTokens = estimateTokens(responseText);
-    logAPICall('compliance-category-scoring', model, inputTokens, outputTokens);
+    const inputTokenUsage = completion.usage?.input_tokens ?? inputTokens;
+    const outputTokens =
+      completion.usage?.output_tokens ?? estimateTokens(responseText);
+    logAPICall(
+      'compliance-category-scoring',
+      model,
+      inputTokenUsage,
+      outputTokens
+    );
+
+    // Log completion with summary
+    logger.info('Category scoring completed successfully', {
+      component: 'openai',
+      operation: 'compliance-category-scoring',
+      categoryName: category.name,
+      overallScore: categoryScore.overallCategoryScore,
+      categoryStatus: categoryScore.categoryStatus,
+      criteriaScored: categoryScore.criteriaScores.length,
+      model,
+    });
 
     return categoryScore;
   } catch (error) {
+    // Handle OpenAI APIError specifically
+    if (error instanceof OpenAI.APIError) {
+      logger.error('OpenAI API error in category scoring', {
+        component: 'openai',
+        operation: 'compliance-category-scoring',
+        status: error.status,
+        code: error.code,
+        type: error.type,
+        requestId: error.request_id,
+        message: error.message,
+        categoryName: category.name,
+        criteriaCount: category.criteria.length,
+        model: options.model || DEFAULT_MODEL,
+      });
+
+      // Handle specific error types
+      if (error.status === 429) {
+        throw Errors.rateLimited('OpenAI API');
+      } else if (error.status === 503) {
+        throw Errors.serviceUnavailable('OpenAI API');
+      } else if (error.code === 'context_length_exceeded') {
+        throw Errors.contextLimitExceeded();
+      }
+
+      // Generic APIError
+      throw new AnalysisError(
+        `OpenAI API error: ${error.message}`,
+        category.name,
+        error
+      );
+    }
+
+    // Log error with context
+    logger.error('Category scoring failed', {
+      component: 'openai',
+      operation: 'compliance-category-scoring',
+      error: error instanceof Error ? error : new Error(String(error)),
+      categoryName: category.name,
+      criteriaCount: category.criteria.length,
+      model: options.model || DEFAULT_MODEL,
+    });
+
     // Handle Zod validation errors
     if (error instanceof Error && error.name === 'ZodError') {
       throw new AnalysisError(
@@ -508,54 +612,137 @@ export async function generateAuditNarrative(
     // Estimate tokens for logging
     const inputTokens = estimateTokens(systemPrompt + userPrompt);
 
-    // ⚠️ CRITICAL: Must use responses.create() API, NOT chat.completions.create()
-    // Call GPT-4.1 with structured outputs using retry logic
-    const completion = await retryWithBackoff(async () => {
-      return await openai.chat.completions.create({
-        model,  // ⚠️ DO NOT change this model
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt,
-          },
-          {
-            role: 'user',
-            content: userPrompt,
-          },
-        ],
-        temperature,
-        response_format: zodResponseFormat(AuditNarrativeSchema, 'audit_narrative'),
-      });
-    });
+    // Request queue → Circuit breaker → Logging → Retry → OpenAI API
+    // Queue controls request admission (rate limiting, concurrency)
+    // Circuit breaker prevents cascading failures
+    // Logging tracks API calls and token usage
+    // Retry handles transient failures
+    const completion = await requestQueues.openaiAPI.enqueue(
+      async () => {
+        return await circuitBreakers.openaiGPT4.execute(async () => {
+          return await wrapOpenAICall(
+            'compliance-narrative-generation',
+            model,
+            inputTokens,
+            async () => {
+              return await retryWithBackoff(async () => {
+                return await openai.responses.create(
+                  {
+                    model, // ⚠️ DO NOT change this model
+                    input: [
+                      { role: 'system', content: systemPrompt },
+                      { role: 'user', content: userPrompt },
+                    ],
+                    temperature,
+                    response_format: zodResponseFormat(
+                      AuditNarrativeSchema as any,
+                      'audit_narrative'
+                    ),
+                  },
+                  {
+                    timeout: 3 * 60 * 1000, // 3 minutes for narrative generation
+                  }
+                );
+              });
+            },
+            {
+              estimatedInputTokens: inputTokens,
+              categoryCount: categoryScores.length,
+            }
+          );
+        });
+      },
+      1 // Normal priority for user-initiated compliance audits
+    );
 
-    // Check for refusal (AI declined to respond)
-    const message = completion.choices[0]?.message;
-    if (!message) {
-      throw new AnalysisError('No response from GPT-4.1', 'narrative-generation');
-    }
+    const responseText = extractResponseText(
+      completion,
+      'Audit narrative generation response'
+    );
+    let parsed: AuditNarrative;
+    try {
+      parsed = AuditNarrativeSchema.parse(JSON.parse(responseText));
 
-    if (message.refusal) {
-      throw new AnalysisError(
-        `AI refused to generate narrative: ${message.refusal}`,
-        'narrative-generation'
+      logOpenAISchemaValidation(
+        'compliance-narrative-generation',
+        'AuditNarrativeSchema',
+        true,
+        []
       );
+    } catch (zodError) {
+      const errors =
+        zodError instanceof Error ? [zodError.message] : ['Unknown validation error'];
+      logOpenAISchemaValidation(
+        'compliance-narrative-generation',
+        'AuditNarrativeSchema',
+        false,
+        errors
+      );
+      throw zodError;
     }
 
-    // Extract and validate content
-    const responseText = message.content;
-    if (!responseText) {
-      throw new AnalysisError('Empty response from GPT-4.1', 'narrative-generation');
-    }
+    const inputTokenUsage = completion.usage?.input_tokens ?? inputTokens;
+    const outputTokens =
+      completion.usage?.output_tokens ?? estimateTokens(responseText);
+    logAPICall(
+      'compliance-narrative-generation',
+      model,
+      inputTokenUsage,
+      outputTokens
+    );
 
-    // Parse with Zod schema validation
-    const parsed = AuditNarrativeSchema.parse(JSON.parse(responseText));
-
-    // Log API call for monitoring
-    const outputTokens = estimateTokens(responseText);
-    logAPICall('compliance-narrative-generation', model, inputTokens, outputTokens);
+    // Log completion with summary
+    logger.info('Audit narrative generation completed successfully', {
+      component: 'openai',
+      operation: 'compliance-narrative-generation',
+      overallScore: parsed.overallScore,
+      recommendationCount: parsed.recommendations.length,
+      narrativeLength: parsed.executiveSummary.length,
+      model,
+    });
 
     return parsed;
   } catch (error) {
+    // Handle OpenAI APIError specifically
+    if (error instanceof OpenAI.APIError) {
+      logger.error('OpenAI API error in narrative generation', {
+        component: 'openai',
+        operation: 'compliance-narrative-generation',
+        status: error.status,
+        code: error.code,
+        type: error.type,
+        requestId: error.request_id,
+        message: error.message,
+        categoryCount: categoryScores.length,
+        model: options.model || DEFAULT_MODEL,
+      });
+
+      // Handle specific error types
+      if (error.status === 429) {
+        throw Errors.rateLimited('OpenAI API');
+      } else if (error.status === 503) {
+        throw Errors.serviceUnavailable('OpenAI API');
+      } else if (error.code === 'context_length_exceeded') {
+        throw Errors.contextLimitExceeded();
+      }
+
+      // Generic APIError
+      throw new AnalysisError(
+        `OpenAI API error: ${error.message}`,
+        'narrative-generation',
+        error
+      );
+    }
+
+    // Log error with context
+    logger.error('Audit narrative generation failed', {
+      component: 'openai',
+      operation: 'compliance-narrative-generation',
+      error: error instanceof Error ? error : new Error(String(error)),
+      categoryCount: categoryScores.length,
+      model: options.model || DEFAULT_MODEL,
+    });
+
     // Handle Zod validation errors
     if (error instanceof Error && error.name === 'ZodError') {
       throw new AnalysisError(

@@ -11,7 +11,7 @@ const meta = {
   argTypes: {
     status: {
       control: 'select',
-      options: ['uploading', 'processing', 'analyzing', 'complete', 'error'],
+      options: ['uploading', 'uploaded', 'processing', 'analyzing', 'complete', 'error'],
     },
     uploadProgress: {
       control: { type: 'range', min: 0, max: 100, step: 1 },
@@ -43,6 +43,18 @@ export const Uploading: Story = {
     fileSize: 15728640, // 15 MB
     status: 'uploading',
     uploadProgress: 45,
+  },
+}
+
+/**
+ * Upload finished, waiting to start analysis
+ */
+export const Uploaded: Story = {
+  args: {
+    fileName: 'radio-traffic-2024-10-04.mp3',
+    fileSize: 15728640,
+    status: 'uploaded',
+    uploadProgress: 100,
   },
 }
 

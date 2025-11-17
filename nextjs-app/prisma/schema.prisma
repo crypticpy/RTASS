@@ -20,15 +20,16 @@ datasource db {
  * Tracks incident details, status, and relationships to units, transcripts, and audits.
  */
 model Incident {
-  id        String    @id @default(cuid())
-  number    String    @unique /// Incident number (e.g., "2024-001234")
-  type      String /// Type of incident (e.g., "Structure Fire", "Medical Emergency")
-  severity  String /// CRITICAL, HIGH, MEDIUM, LOW
-  address   String /// Location of the incident
-  startTime DateTime /// When the incident began
-  endTime   DateTime? /// When the incident was resolved (null if ongoing)
-  status    String /// ACTIVE, RESOLVED, MONITORING
-  summary   String? /// Brief summary of the incident
+  id                  String    @id @default(cuid())
+  number              String    @unique /// Incident number (e.g., "2024-001234")
+  type                String /// Type of incident (e.g., "Structure Fire", "Medical Emergency")
+  severity            String /// CRITICAL, HIGH, MEDIUM, LOW
+  address             String /// Location of the incident
+  startTime           DateTime /// When the incident began
+  endTime             DateTime? /// When the incident was resolved (null if ongoing)
+  status              String /// ACTIVE, RESOLVED, MONITORING
+  summary             String? /// Brief summary of the incident
+  selectedTemplateIds String[]  @default([]) /// Template IDs selected for compliance auditing
 
   // Relationships
   units       Unit[]       @relation("IncidentUnits")
@@ -159,11 +160,12 @@ model Audit {
   // Relationships
   incident   Incident    @relation(fields: [incidentId], references: [id], onDelete: Cascade)
   transcript Transcript? @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
-  template   Template    @relation(fields: [templateId], references: [id])
+  template   Template    @relation(fields: [templateId], references: [id], onDelete: Restrict)
 
   // Metadata
   createdAt DateTime @default(now())
 
+  @@unique([incidentId, templateId])
   @@index([incidentId])
   @@index([templateId])
   @@index([overallStatus])
@@ -211,7 +213,7 @@ model TemplateGeneration {
   generationLog Json /// Detailed AI processing log
   confidence    Float /// AI confidence score (0-1)
   suggestions   Json /// AI improvement suggestions
-  aiModel       String @default("gpt-4o") /// AI model used for generation
+  aiModel       String @default("gpt-4.1") /// AI model used for generation
 
   // Relationships
   template  Template                            @relation(fields: [templateId], references: [id], onDelete: Cascade)
@@ -260,6 +262,26 @@ model SystemMetrics {
   @@index([metricName])
   @@index([recordedAt])
   @@map("system_metrics")
+}
+
+/**
+ * SystemLog stores structured application logs for debugging and auditing.
+ * Written by the DatabaseTransport from the logging infrastructure.
+ */
+model SystemLog {
+  id        String   @id @default(cuid())
+  timestamp DateTime /// When the log entry was created
+  level     String /// Log severity: DEBUG, INFO, WARN, ERROR, CRITICAL
+  message   String   @db.Text /// Log message
+  metadata  Json /// Structured metadata (component, operation, correlationId, etc.)
+
+  // Metadata
+  createdAt DateTime @default(now())
+
+  @@index([level])
+  @@index([timestamp])
+  @@index([createdAt])
+  @@map("system_logs")
 }
 
 // ============================================================================
