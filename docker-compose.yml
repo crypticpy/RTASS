@@ -156,7 +156,7 @@ services:
 
     environment:
       # pgAdmin credentials
-      PGADMIN_DEFAULT_EMAIL: admin@transcriber.local
+      PGADMIN_DEFAULT_EMAIL: admin@transcriber.dev
       PGADMIN_DEFAULT_PASSWORD: admin
 
       # Configuration
