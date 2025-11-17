@@ -68,10 +68,10 @@ import { handleServiceError } from '@/lib/services/utils/errorHandlers';
  */
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const incidentId = params.id;
+    const { id: incidentId } = await params;
 
     // Fetch incident with all related data
     const incident = await prisma.incident.findUnique({
