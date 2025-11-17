@@ -182,6 +182,8 @@ export interface ComplianceCriterion {
  * Compliance category
  */
 export interface ComplianceCategory {
+  id?: string; // Template category ID (optional for backwards compatibility)
+  sortOrder?: number; // Category display order (optional)
   name: string;
   description: string;
   weight: number; // 0-1, relative weight in overall score
