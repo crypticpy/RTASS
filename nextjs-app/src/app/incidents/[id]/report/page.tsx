@@ -645,50 +645,75 @@ Personnel accountability was excellent throughout the incident, with PARs comple
     const transcript = data.transcripts?.[0]
     const findings = audit.findings as any
 
+    // Helper function to safely parse numbers and prevent NaN
+    const safeNumber = (value: any, fallback: number = 0): number => {
+      const num = typeof value === 'number' ? value : parseFloat(value)
+      return isNaN(num) || !isFinite(num) ? fallback : num
+    }
+
+    // Helper function to parse timestamps (can be string like "00:14" or number)
+    const parseTimestamp = (ts: any): number => {
+      if (typeof ts === 'number') return ts
+      if (typeof ts === 'string') {
+        // Parse MM:SS format
+        const parts = ts.split(':')
+        if (parts.length === 2) {
+          const mins = parseInt(parts[0], 10)
+          const secs = parseInt(parts[1], 10)
+          return (mins * 60) + secs
+        }
+      }
+      return 0
+    }
+
     // Calculate stats
     const categories = findings?.categories || []
     const criticalFindings = categories
-      .flatMap((cat: any) =>
-        cat.criteria
-          ?.filter((c: any) => c.score === 'FAIL' && (c.impact === 'CRITICAL' || c.impact === 'HIGH'))
-          .map((c: any) => ({
-            id: c.criterionId,
-            timestamp: c.evidence?.[0]?.timestamp || 0,
-            text: c.reasoning,
-            severity: c.impact?.toLowerCase() || 'medium',
-            category: cat.categoryName,
-            citation: c.criterionId,
-            evidence: c.evidence?.map((e: any) => e.text).join('; ') || '',
-          })) || []
+      .flatMap((cat: any, catIndex: number) =>
+        (cat.criteria || [])
+          .filter((c: any) => c.score === 'FAIL' && (c.impact === 'CRITICAL' || c.impact === 'HIGH'))
+          .map((c: any, critIndex: number) => ({
+            id: c.criterionId || `crit-${catIndex}-${critIndex}`,
+            timestamp: parseTimestamp(c.evidence?.[0]?.timestamp),
+            text: c.reasoning || 'No reasoning provided',
+            severity: (c.impact?.toLowerCase() || 'medium') as 'critical' | 'high' | 'medium' | 'low',
+            category: cat.categoryName || 'Unknown Category',
+            citation: c.criterionId || '',
+            evidence: c.evidence?.map((e: any) => e.text).join('; ') || 'No evidence',
+          }))
       )
 
     const strengths = categories
-      .flatMap((cat: any) =>
-        cat.criteria
-          ?.filter((c: any) => c.score === 'PASS')
-          .map((c: any) => ({
-            id: c.criterionId,
-            timestamp: c.evidence?.[0]?.timestamp || 0,
-            text: c.reasoning,
+      .flatMap((cat: any, catIndex: number) =>
+        (cat.criteria || [])
+          .filter((c: any) => c.score === 'PASS')
+          .map((c: any, critIndex: number) => ({
+            id: c.criterionId || `strength-${catIndex}-${critIndex}`,
+            timestamp: parseTimestamp(c.evidence?.[0]?.timestamp),
+            text: c.reasoning || 'Criteria met',
             severity: 'low' as const,
-            category: cat.categoryName,
-            citation: c.criterionId,
-            evidence: c.evidence?.map((e: any) => e.text).join('; ') || '',
-          })) || []
+            category: cat.categoryName || 'Unknown Category',
+            citation: c.criterionId || '',
+            evidence: c.evidence?.map((e: any) => e.text).join('; ') || 'Compliant',
+          }))
       )
+
+    // Calculate safe overall score
+    const overallScore = safeNumber(audit.overallScore, 0)
+    const overallStatus = audit.overallStatus || 'NEEDS_IMPROVEMENT'
 
     return {
       incident: {
         id: data.id,
-        name: `${data.type} - ${data.address}`,
-        description: data.summary || `${data.type} incident`,
-        type: data.type,
-        location: data.address,
+        name: `${data.type || 'Incident'} - ${data.address || 'Unknown Location'}`,
+        description: data.summary || `${data.type || 'Incident'} incident`,
+        type: data.type || 'UNKNOWN',
+        location: data.address || 'Unknown',
         incidentDate: new Date(data.startTime),
         incidentTime: new Date(data.startTime).toLocaleTimeString(),
         unitsInvolved: data.units?.map((u: any) => u.number) || [],
         notes: data.summary || '',
-        status: data.status,
+        status: data.status || 'MONITORING',
         audioFile: transcript
           ? {
               filename: transcript.originalName,
@@ -702,34 +727,40 @@ Personnel accountability was excellent throughout the incident, with PARs comple
         processingCompletedAt: audit.createdAt ? new Date(audit.createdAt) : undefined,
         transcriptId: transcript?.id,
         auditIds: data.audits.map((a: any) => a.id),
-        overallScore: audit.overallScore || 0,
+        overallScore,
         maydayDetected: transcript?.detections?.mayday?.length > 0 || false,
         createdAt: new Date(data.createdAt),
         updatedAt: new Date(data.updatedAt),
       },
-      overallScore: audit.overallScore || 0,
-      overallStatus: audit.overallStatus || 'NEEDS_IMPROVEMENT',
+      overallScore,
+      overallStatus,
       stats: {
         criticalIssues: criticalFindings.length,
         warnings: 0,
         strengths: strengths.length,
         totalCriteria: categories.reduce((sum: number, cat: any) => sum + (cat.criteria?.length || 0), 0),
       },
-      narrative: audit.summary || 'No summary available',
+      narrative: audit.summary || 'Compliance analysis completed. Detailed findings available in the categories below.',
       compliance: {
-        overallScore: audit.overallScore || 0,
-        overallStatus: audit.overallStatus || 'NEEDS_IMPROVEMENT',
+        overallScore,
+        overallStatus,
         totalCitations: categories.length,
-        categories: categories.map((cat: any) => ({
-          id: cat.categoryId,
-          name: cat.categoryName,
-          score: cat.categoryScore * 100,
-          status: cat.categoryScore >= 0.7 ? 'PASS' : 'FAIL',
-          weight: cat.weight || 0,
-          criteriaCount: cat.criteria?.length || 0,
-          passCount: cat.criteria?.filter((c: any) => c.score === 'PASS').length || 0,
-          failCount: cat.criteria?.filter((c: any) => c.score === 'FAIL').length || 0,
-        })),
+        categories: categories.map((cat: any, idx: number) => {
+          const categoryScore = safeNumber(cat.categoryScore, 0)
+          const scorePercentage = safeNumber(categoryScore * 100, 0)
+          const criteriaList = cat.criteria || []
+
+          return {
+            id: cat.categoryId || `cat-${idx}`,
+            name: cat.categoryName || `Category ${idx + 1}`,
+            score: scorePercentage,
+            status: categoryScore >= 0.7 ? ('PASS' as const) : ('FAIL' as const),
+            weight: safeNumber(cat.weight, 0),
+            criteriaCount: criteriaList.length,
+            passCount: criteriaList.filter((c: any) => c.score === 'PASS').length,
+            failCount: criteriaList.filter((c: any) => c.score === 'FAIL').length,
+          }
+        }),
       },
       criticalFindings,
       strengths,
@@ -738,14 +769,14 @@ Personnel accountability was excellent throughout the incident, with PARs comple
         ? {
             segments: (transcript.segments as any[])?.map((seg, idx) => ({
               id: `seg-${idx}`,
-              startTime: seg.start || 0,
-              endTime: seg.end || 0,
+              startTime: safeNumber(seg.start, 0),
+              endTime: safeNumber(seg.end, 0),
               text: seg.text || '',
               speaker: 'Unknown',
-              confidence: 0.95,
+              confidence: safeNumber(seg.confidence, 0.95),
             })) || [],
             emergencyKeywords: transcript.detections || {},
-            duration: transcript.duration,
+            duration: safeNumber(transcript.duration, 0),
             wordCount: transcript.text?.split(/\s+/).length || 0,
             language: transcript.metadata?.language || 'English',
           }
