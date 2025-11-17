@@ -363,16 +363,32 @@ export class IncidentService {
         id: { in: templateIds },
         isActive: true, // Only allow active templates
       },
-      select: { id: true },
+      select: { id: true, name: true },
     });
 
     if (templates.length !== templateIds.length) {
       const foundIds = templates.map((t) => t.id);
       const missingIds = templateIds.filter((id) => !foundIds.includes(id));
-      throw Errors.invalidInput(
-        'selectedTemplateIds',
-        `Invalid or inactive template IDs: ${missingIds.join(', ')}`
-      );
+
+      // Fetch available active templates for helpful error message
+      const availableTemplates = await prisma.template.findMany({
+        where: { isActive: true },
+        select: { id: true, name: true },
+        take: 10, // Limit to 10 for readability
+      });
+
+      let errorMessage = `Invalid or inactive template IDs: ${missingIds.join(', ')}`;
+
+      if (availableTemplates.length > 0) {
+        errorMessage += `\n\nAvailable active templates:`;
+        availableTemplates.forEach((t) => {
+          errorMessage += `\n  - ${t.name} (ID: ${t.id})`;
+        });
+      } else {
+        errorMessage += `\n\nNo active templates are currently available. Please create or activate a template first.`;
+      }
+
+      throw Errors.invalidInput('selectedTemplateIds', errorMessage);
     }
   }
 
