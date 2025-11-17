@@ -17,6 +17,7 @@ import type {
   EmergencyEvent,
 } from "@/types/incident"
 import { toast } from "sonner"
+import { Loader2 } from "lucide-react"
 
 /**
  * Incident Report Page
@@ -34,6 +35,41 @@ export default function IncidentReportPage() {
   const incidentId = params.id as string
   const activeTab = searchParams.get('tab') || 'overview'
 
+  // State for fetching real data
+  const [loading, setLoading] = React.useState(true)
+  const [error, setError] = React.useState<string | null>(null)
+  const [incidentData, setIncidentData] = React.useState<any>(null)
+
+  // Fetch incident data from API
+  React.useEffect(() => {
+    async function fetchIncidentData() {
+      try {
+        setLoading(true)
+        const response = await fetch(`/api/incidents/${incidentId}`)
+
+        if (!response.ok) {
+          throw new Error(`Failed to fetch incident: ${response.statusText}`)
+        }
+
+        const result = await response.json()
+
+        if (result.success) {
+          setIncidentData(result.data)
+        } else {
+          throw new Error(result.error?.message || 'Failed to fetch incident data')
+        }
+      } catch (err) {
+        console.error('Error fetching incident:', err)
+        setError(err instanceof Error ? err.message : 'Unknown error')
+        toast.error('Failed to load incident data')
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchIncidentData()
+  }, [incidentId])
+
   // Set active tab (updates URL)
   const setActiveTab = (tab: string) => {
     const newParams = new URLSearchParams(searchParams.toString())
@@ -41,7 +77,7 @@ export default function IncidentReportPage() {
     router.push(`?${newParams.toString()}`)
   }
 
-  // Mock data - comprehensive incident report
+  // Mock data - comprehensive incident report (used as fallback for demo or when no real data exists)
   const mockIncidentReport: IncidentReport = {
     incident: {
       id: incidentId,
@@ -563,15 +599,16 @@ Personnel accountability was excellent throughout the incident, with PARs comple
   // Handle export PDF
   const handleExportPDF = async () => {
     // Mock implementation - simulates PDF generation
+    const dataForPDF = incidentData ? transformRealData(incidentData) || mockIncidentReport : mockIncidentReport
     return new Promise<void>((resolve) => {
       setTimeout(() => {
         // In production, this would call /api/incidents/[id]/export-pdf
         const link = document.createElement('a');
         link.href = '#'; // Mock URL
-        const date = mockIncidentReport.incident.incidentDate
-          ? mockIncidentReport.incident.incidentDate.toISOString().split('T')[0]
+        const date = dataForPDF.incident.incidentDate
+          ? dataForPDF.incident.incidentDate.toISOString().split('T')[0]
           : 'report';
-        link.download = `Incident-Report-${mockIncidentReport.incident.name.replace(/[^a-z0-9]/gi, '-')}-${date}.pdf`;
+        link.download = `Incident-Report-${dataForPDF.incident.name.replace(/[^a-z0-9]/gi, '-')}-${date}.pdf`;
         // Don't actually trigger download for mock
         resolve();
       }, 2000);
@@ -597,8 +634,130 @@ Personnel accountability was excellent throughout the incident, with PARs comple
     return `${minutes}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Transform real incident data to match mock data structure
+  const transformRealData = (data: any): IncidentReport | null => {
+    if (!data || !data.audits || data.audits.length === 0) {
+      return null // No real audit data available
+    }
+
+    // Use the most recent audit
+    const audit = data.audits[0]
+    const transcript = data.transcripts?.[0]
+    const findings = audit.findings as any
+
+    // Calculate stats
+    const categories = findings?.categories || []
+    const criticalFindings = categories
+      .flatMap((cat: any) =>
+        cat.criteria
+          ?.filter((c: any) => c.score === 'FAIL' && (c.impact === 'CRITICAL' || c.impact === 'HIGH'))
+          .map((c: any) => ({
+            id: c.criterionId,
+            timestamp: c.evidence?.[0]?.timestamp || 0,
+            text: c.reasoning,
+            severity: c.impact?.toLowerCase() || 'medium',
+            category: cat.categoryName,
+            citation: c.criterionId,
+            evidence: c.evidence?.map((e: any) => e.text).join('; ') || '',
+          })) || []
+      )
+
+    const strengths = categories
+      .flatMap((cat: any) =>
+        cat.criteria
+          ?.filter((c: any) => c.score === 'PASS')
+          .map((c: any) => ({
+            id: c.criterionId,
+            timestamp: c.evidence?.[0]?.timestamp || 0,
+            text: c.reasoning,
+            severity: 'low' as const,
+            category: cat.categoryName,
+            citation: c.criterionId,
+            evidence: c.evidence?.map((e: any) => e.text).join('; ') || '',
+          })) || []
+      )
+
+    return {
+      incident: {
+        id: data.id,
+        name: `${data.type} - ${data.address}`,
+        description: data.summary || `${data.type} incident`,
+        type: data.type,
+        location: data.address,
+        incidentDate: new Date(data.startTime),
+        incidentTime: new Date(data.startTime).toLocaleTimeString(),
+        unitsInvolved: data.units?.map((u: any) => u.number) || [],
+        notes: data.summary || '',
+        status: data.status,
+        audioFile: transcript
+          ? {
+              filename: transcript.originalName,
+              url: transcript.audioUrl,
+              size: transcript.fileSize,
+              duration: transcript.duration,
+              format: transcript.format,
+            }
+          : undefined,
+        processingStartedAt: new Date(data.createdAt),
+        processingCompletedAt: audit.createdAt ? new Date(audit.createdAt) : undefined,
+        transcriptId: transcript?.id,
+        auditIds: data.audits.map((a: any) => a.id),
+        overallScore: audit.overallScore || 0,
+        maydayDetected: transcript?.detections?.mayday?.length > 0 || false,
+        createdAt: new Date(data.createdAt),
+        updatedAt: new Date(data.updatedAt),
+      },
+      overallScore: audit.overallScore || 0,
+      overallStatus: audit.overallStatus || 'NEEDS_IMPROVEMENT',
+      stats: {
+        criticalIssues: criticalFindings.length,
+        warnings: 0,
+        strengths: strengths.length,
+        totalCriteria: categories.reduce((sum: number, cat: any) => sum + (cat.criteria?.length || 0), 0),
+      },
+      narrative: audit.summary || 'No summary available',
+      compliance: {
+        overallScore: audit.overallScore || 0,
+        overallStatus: audit.overallStatus || 'NEEDS_IMPROVEMENT',
+        totalCitations: categories.length,
+        categories: categories.map((cat: any) => ({
+          id: cat.categoryId,
+          name: cat.categoryName,
+          score: cat.categoryScore * 100,
+          status: cat.categoryScore >= 0.7 ? 'PASS' : 'FAIL',
+          weight: cat.weight || 0,
+          criteriaCount: cat.criteria?.length || 0,
+          passCount: cat.criteria?.filter((c: any) => c.score === 'PASS').length || 0,
+          failCount: cat.criteria?.filter((c: any) => c.score === 'FAIL').length || 0,
+        })),
+      },
+      criticalFindings,
+      strengths,
+      timeline: [], // Timeline would need additional processing
+      transcript: transcript
+        ? {
+            segments: (transcript.segments as any[])?.map((seg, idx) => ({
+              id: `seg-${idx}`,
+              startTime: seg.start || 0,
+              endTime: seg.end || 0,
+              text: seg.text || '',
+              speaker: 'Unknown',
+              confidence: 0.95,
+            })) || [],
+            emergencyKeywords: transcript.detections || {},
+            duration: transcript.duration,
+            wordCount: transcript.text?.split(/\s+/).length || 0,
+            language: transcript.metadata?.language || 'English',
+          }
+        : mockIncidentReport.transcript,
+    }
+  }
+
+  // Use real data if available, otherwise fall back to mock data
+  const reportData = incidentData ? transformRealData(incidentData) || mockIncidentReport : mockIncidentReport
+
   // Convert timeline events to EmergencyEvent format for EmergencyTimeline component
-  const emergencyTimelineEvents: EmergencyEvent[] = mockIncidentReport.timeline
+  const emergencyTimelineEvents: EmergencyEvent[] = reportData.timeline
     .filter(event => ['mayday', 'emergency', 'evacuation', 'all_clear', 'info'].includes(event.type))
     .map(event => ({
       id: event.id,
@@ -610,23 +769,59 @@ Personnel accountability was excellent throughout the incident, with PARs comple
       context: event.context,
     }));
 
+  // Show loading state
+  if (loading) {
+    return (
+      <div className="container max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+        <div className="flex items-center justify-center h-[calc(100vh-200px)]">
+          <div className="text-center space-y-4">
+            <Loader2 className="h-12 w-12 animate-spin mx-auto text-fire-600" />
+            <p className="text-gray-600 dark:text-gray-300">Loading incident report...</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Show error state (but still allow viewing mock data for demo)
+  if (error && !incidentData) {
+    return (
+      <div className="container max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+        <Card className="border-red-200 dark:border-red-800">
+          <CardContent className="pt-6">
+            <div className="text-center space-y-4">
+              <p className="text-red-600 dark:text-red-400 font-semibold">Failed to load incident data</p>
+              <p className="text-sm text-gray-600 dark:text-gray-300">{error}</p>
+              <button
+                onClick={() => router.push('/incidents')}
+                className="text-fire-600 hover:text-fire-700 text-sm font-medium"
+              >
+                ← Back to Incidents
+              </button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
   return (
     <div className="container max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6">
       {/* Report Header */}
       <ReportHeader
         incidentId={incidentId}
-        incidentName={mockIncidentReport.incident.name}
-        incidentDate={mockIncidentReport.incident.incidentDate}
-        overallScore={mockIncidentReport.overallScore}
-        overallStatus={mockIncidentReport.overallStatus}
+        incidentName={reportData.incident.name}
+        incidentDate={reportData.incident.incidentDate}
+        overallScore={reportData.overallScore}
+        overallStatus={reportData.overallStatus}
         onBack={() => router.push('/incidents')}
         onExportPDF={handleExportPDF}
       />
 
       {/* Stats Cards */}
       <StatsCards
-        stats={mockIncidentReport.stats}
-        overallScore={mockIncidentReport.overallScore}
+        stats={reportData.stats}
+        overallScore={reportData.overallScore}
       />
 
       {/* Tabbed Interface */}
@@ -640,14 +835,14 @@ Personnel accountability was excellent throughout the incident, with PARs comple
         {/* Overview Tab */}
         <TabsContent value="overview" className="space-y-6 mt-6">
           {/* Narrative Summary */}
-          {mockIncidentReport.narrative && (
+          {reportData.narrative && (
             <Card>
               <CardHeader>
                 <CardTitle>Executive Summary</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="prose prose-sm dark:prose-invert max-w-none">
-                  {mockIncidentReport.narrative.split('\n\n').map((paragraph, index) => (
+                  {reportData.narrative.split('\n\n').map((paragraph, index) => (
                     <p key={index} className="text-sm leading-relaxed mb-4 last:mb-0">
                       {paragraph}
                     </p>
@@ -659,10 +854,10 @@ Personnel accountability was excellent throughout the incident, with PARs comple
 
           {/* Compliance Score Breakdown */}
           <ComplianceScore
-            overallScore={mockIncidentReport.compliance.overallScore}
-            overallStatus={mockIncidentReport.compliance.overallStatus}
-            totalCitations={mockIncidentReport.compliance.totalCitations}
-            categories={mockIncidentReport.compliance.categories}
+            overallScore={reportData.compliance.overallScore}
+            overallStatus={reportData.compliance.overallStatus}
+            totalCitations={reportData.compliance.totalCitations}
+            categories={reportData.compliance.categories}
             variant="detailed"
             showCategories={true}
           />
@@ -673,7 +868,7 @@ Personnel accountability was excellent throughout the incident, with PARs comple
           <div>
             <h2 className="text-2xl font-bold mb-4">Critical Findings</h2>
             <FindingsList
-              findings={mockIncidentReport.criticalFindings}
+              findings={reportData.criticalFindings}
               variant="critical"
               onTimestampClick={handleTimestampClick}
             />
@@ -685,7 +880,7 @@ Personnel accountability was excellent throughout the incident, with PARs comple
           <div>
             <h2 className="text-2xl font-bold mb-4">Strengths & Commendations</h2>
             <FindingsList
-              findings={mockIncidentReport.strengths}
+              findings={reportData.strengths}
               variant="strengths"
               onTimestampClick={handleTimestampClick}
             />
